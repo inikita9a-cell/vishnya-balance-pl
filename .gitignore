@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+env/
+
+# Данные хакатона (чтобы гит не упал от тяжелых файлов)
+data/
+*.csv
+*.xlsx
+*.parquet
+.ipynb_checkpoints/
+
+# Настройки IDE
+.idea/
+.vscode/
