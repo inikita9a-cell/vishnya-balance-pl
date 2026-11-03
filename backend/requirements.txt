@@ -17,6 +17,7 @@ pydantic_core==2.50.2
 starlette==1.10.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
+zen-engine==2.1.3
 
 # Визуализация и графики (для Ирины и Алины)
 plotly==5.24.1
