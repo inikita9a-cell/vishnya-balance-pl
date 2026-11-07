@@ -13,6 +13,7 @@ import { PageHeading, ErrorBox, Empty, QuietButton, TextButton, Muted, NoticeSpa
 import { AppSelect } from '../../components/AppSelect/AppSelect';
 import { InfoNotice } from '../../components/InfoNotice/InfoNotice';
 import { Surface } from '../../components/Surface';
+import { deepLinkedApplication } from '../../api/deepLinks';
 
 type RegistryProps = {
   runId: string;
@@ -69,6 +70,11 @@ export function Registry({ runId, filters = {}, onRun, onRunChange, onClearFilte
     getDrilldown(runId).then(rows => {
       if (!live) return;
       const selected = filterSegments(rows, JSON.parse(serializedFilters) as Record<string, unknown>);
+      const requestedFilters = JSON.parse(serializedFilters) as Record<string, unknown>;
+      setSelectedId(deepLinkedApplication(requestedFilters, selected.map(item => item.APP_ID)));
+      if (typeof requestedFilters.APP_ID === 'string' && !selected.some(item => item.APP_ID === requestedFilters.APP_ID)) {
+        setDetailError(`Заявка ${requestedFilters.APP_ID} не найдена в реестре этого запуска.`);
+      }
       setTotal(selected.length);
       setSegments(selected);
       setApplications(selected.map(item => ({

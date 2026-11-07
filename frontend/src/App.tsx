@@ -15,6 +15,7 @@ import type { User } from './api/types';
 import { getRuns } from './api/real';
 import { isRunDone } from './api/format';
 import { ErrorBox } from './components/Ui';
+import { retainDeepLinkAfterLogin } from './api/deepLinks';
 type Location = {
   section: StrategySection | 'detail' | 'step';
   runId: string;
@@ -98,7 +99,7 @@ function App() {
   if (checking) return <div style={{ padding: 45, fontFamily: 'Manrope,sans-serif' }}>Подключение к StrategyLab…</div>;
   if (!user) return <Login onLogin={u => {
     setUser(u);
-    navigate('runs', '');
+    if (!retainDeepLinkAfterLogin(location.section, location.runId)) navigate('runs', '');
   }} />;
   const section: StrategySection = ['report', 'registry', 'checks', 'config'].includes(location.section) ? location.section as StrategySection : 'runs';
   return <Container>
