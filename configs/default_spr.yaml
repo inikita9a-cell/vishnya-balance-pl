@@ -1,0 +1,77 @@
+# Вся специфика датасета СПР живёт здесь. engine/ про эти имена ничего не знает.
+name: default_spr
+dataset:
+  path: data/RUN-20260827-0001
+  before_dir: RESULTS/BEFORE_MASTER
+  after_dir: RESULTS/AFTER_BETA
+  formats: [json, xml]
+  use_manifest_excludes: true        # добавить manifest.technical_fields_always_differ в exclude_paths
+
+pool:
+  mode: all                          # all | list | filter (filter применяется к segments после расчёта)
+  app_ids: []
+  filter: null                       # пример: "DECISION_BEFORE == 'APPROVE'"
+
+flatten:
+  max_depth: 12
+  sep_array_key: "|"                 # между уровнями массивов
+  sep_composite: "+"                 # внутри составного ключа
+  exclude_paths: [appData.request_id, appData.createDateTime]                  # шаблон = путь или поддерево; * = один сегмент, ** = любые
+  include_paths: []                  # пусто = всё
+  track_order: false                 # true = писать позицию элементов keyed-массивов (если порядок правил важен)
+  auto_key: true
+  auto_key_candidates: [id, "*_id", name, code, modelName, action, type]
+  arrays:
+    "decisionResult.available_offers":                   {mode: field, key: [product_id, type]}
+    "decisionResult.product_trials":                     {mode: field, key: [product_id]}
+    "decisionResult.product_trials.rules":               {mode: field, key: [name]}
+    "decisionResult.product_trials.scoring.scoreModels": {mode: field, key: [modelName]}
+    "decisionResult.scoring":                            {mode: field, key: [modelName]}
+    "decisionResult.scoring.value":                      {mode: index}
+    "ext_data":                                          {mode: field, key: [body.action]}
+    "product_catalog":                                   {mode: field, key: [mfo_id, product_id]}
+    "tariff_matrix":                                     {mode: field, key: [mfo_id, product_id]}
+
+xml:
+  strip_root: true
+  item_tags: [item, element, el]     # обёртки элементов массива, разворачиваем
+  coerce_types: true                 # "710" -> 710, "false" -> False, "" / nil -> None
+
+serialize:
+  "true": "true"
+  "false": "false"
+  "null": "NULL"
+
+buckets:
+  dash: "–"
+  default_unit: [0, 0.3, 0.6, 0.8, 1]          # float в [0,1]
+  default_num:  [0, 1000, 100000, 250000, 1000000]
+  by_path: {}                                   # "decisionResult.**.tariff": [0, 100, 200, 300]
+
+segments:
+  decision: decisionResult.decision
+  reject_reason: decisionResult.product_trials.rejectReason
+  reject_code: decisionResult.product_trials.rejectReasonCode
+  products: decisionResult.product_trials.product_name
+  top_offer: {path: decisionResult.available_offers.product_name, where: {rank: "1"}}
+  partner_type: decisionResult.product_trials.partner_type
+  routing: decisionResult.product_trials.routing_method
+  pd_model: decisionResult.product_trials.scoring.pd.modelName
+  cutoff: decisionResult.product_trials.cutOff.name
+  score_okb: characteristics.score_okb
+  approve_value: APPROVE
+  input_paths: ["characteristics", "ext_data"]   # изменённые входы; вместе с logic_paths дают BOTH
+  logic_paths: ["decisionResult"]
+  cause_detail:                                  # проверяются по порядку, первое совпадение
+    STOP_FACTOR:  ["decisionResult.product_trials.rules"]
+    MODEL_CHANGE: ["decisionResult.product_trials.scoring.pd.modelName", "decisionResult.scoring.modelName"]
+    CUTOFF_CHANGE: ["decisionResult.product_trials.cutOff"]
+    SCORE_CHANGE: ["decisionResult.product_trials.scoring", "decisionResult.scoring"]
+
+quality:
+  required_paths: [appData.application_id, decisionResult.decision]
+  reason_rules:
+    - {when_path: decisionResult.decision, when_value: REJECT, require_path: decisionResult.product_trials.rejectReasonCode}
+
+checks: [ar_drop_by_product, attribute_new_loss, external_score_drift, stop_factor_disappeared, target_model_changed]
+check_params: {}

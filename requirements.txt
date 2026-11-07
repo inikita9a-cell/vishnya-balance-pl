@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pandas>=2.1
+pyarrow
+duckdb
+orjson
+xmltodict
+pyyaml
+numpy
+jupyter
+pytest
