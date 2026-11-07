@@ -576,10 +576,14 @@ def segments(doc_pairs, comparison, cfg, quality_df=None):
     return frame.sort_values('APP_ID').reset_index(drop=True)
 
 
-def prepare_comparison(cfg, run_dir):
-    """Последовательный локальный прогон s1–s9 с Parquet и техническим статусом.
+from .aggregates import blocks, facts, prepare_aggregates
 
-    Старый вызов сохранён. Выход теперь включает segments.parquet.
+
+def prepare_comparison(cfg, run_dir):
+    """Последовательный локальный прогон s1–s11 с Parquet и статусом.
+
+    Старый вызов сохранён: теперь сразу пишет blocks/facts/fact_apps.
+    По готовым данным s9 можно вызвать prepare_aggregates(run_dir, cfg).
     Это не финальный summary и не фоновый оркестратор платформы.
     """
     from pathlib import Path
@@ -587,7 +591,8 @@ def prepare_comparison(cfg, run_dir):
     started = perf_counter()
     out = Path(run_dir)
     filenames = ['union.parquet', 'comparison.parquet', 'quality.parquet',
-                 'segments.parquet', 'comparison_status.json']
+                 'segments.parquet', 'comparison_status.json',
+                 'blocks.parquet', 'facts.parquet', 'fact_apps.parquet']
     # Проверяем до чтения датасета, чтобы повторный запуск не считал всё заново.
     if any((out / name).exists() for name in filenames):
         raise FileExistsError('Результаты уже существуют. Укажите новую папку через --out, например runs/check_002')
@@ -634,4 +639,4 @@ def prepare_comparison(cfg, run_dir):
                   cause_counts={str(k): int(v) for k, v in segment_df.CAUSE.value_counts().items()},
                   duration_seconds=round(perf_counter() - started, 3))
     (out/'comparison_status.json').write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
-    return status
+    return prepare_aggregates(out, cfg)

@@ -80,3 +80,24 @@ quality:
 
 checks: [ar_drop_by_product, attribute_new_loss, external_score_drift, stop_factor_disappeared, target_model_changed]
 check_params: {}
+# s10: иерархия агрегатов. По умолчанию лист KEY не считается отдельным блоком.
+blocks:
+  include_leaf: false
+  max_level: null
+
+# s11: точная схема фактов counts. При необходимости поменять через конфиг.
+# ARRAY_KEY по умолчанию не группируется — иначе модельные/продуктовые ID
+# создают слишком дробную сводную. Точный drill-down доступен в fact_apps.
+facts:
+  include_array_key: false
+  segment_dimensions:
+    - DECISION_BEFORE
+    - DECISION_AFTER
+    - DECISION_CHANGED
+    - DECISION_TRANSITION
+    - REASON_BEFORE
+    - REASON_AFTER
+    - REASON_TRANSITION
+    - CAUSE
+    - PARTNER_TYPE
+    - PRODUCTS
