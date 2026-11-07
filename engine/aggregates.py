@@ -225,7 +225,7 @@ def _empty_facts(dimensions):
         'FACT_ID': pd.Series(dtype='int64'), 'APP_ID': pd.Series(dtype='string')})
 
 
-def prepare_aggregates(run_dir, cfg: dict | None = None) -> dict:
+def prepare_aggregates(run_dir, cfg: dict | None = None, on_event=None) -> dict:
     """Достроить s10–s11 по готовым comparison/segments Parquet без нового JSON-прогона.
 
     Существующие артефакты не перезаписываются. Успешный запуск расширяет
@@ -243,7 +243,12 @@ def prepare_aggregates(run_dir, cfg: dict | None = None) -> dict:
     started = perf_counter()
     comp = pd.read_parquet(out / 'comparison.parquet')
     seg = pd.read_parquet(out / 'segments.parquet')
+    if on_event:
+        on_event({'step': 's10_blocks', 'status': 'running', 'rows_in': len(comp)})
     b = blocks(comp, seg, cfg)
+    if on_event:
+        on_event({'step': 's10_blocks', 'status': 'done', 'rows_out': len(b), 'progress': 100})
+        on_event({'step': 's11_facts', 'status': 'running', 'rows_in': len(comp)})
     f, members = facts(comp, seg, cfg)
     # Сначала все временные файлы, затем публикация. При ошибке очищаем
     # частично опубликованные артефакты этого вызова, не трогая старый прогон.
@@ -272,4 +277,7 @@ def prepare_aggregates(run_dir, cfg: dict | None = None) -> dict:
     if 'duration_seconds' in status:
         status['duration_seconds'] = round(float(status['duration_seconds']) + elapsed, 3)
     status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
+    if on_event:
+        on_event({'step': 's11_facts', 'status': 'done', 'rows_out': len(f),
+                  'progress': 100, 'message': f'fact memberships: {len(members)}'})
     return status

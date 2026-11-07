@@ -1,166 +1,206 @@
-"""Оркестратор: запускает s1..s15 из engine.steps в отдельном потоке,
-пишет stage_logs в SQLite. Переживает перезагрузку страницы (статус в БД)."""
+"""Platform's SQLite-backed background executor for the data engine.
+
+Public signatures used by backend/api/runs_api.py are preserved:
+    start_run(config_id, user) -> run_id
+    run_pipeline(run_id, cfg)
+    rerun_checks(run_id)
+"""
 from __future__ import annotations
-import json, time, traceback, uuid, pathlib, datetime as dt
+
+import datetime as dt
+import inspect
+import json
+from pathlib import Path
+import time
+import traceback
+import uuid
+
 import yaml
 
 from .db import SessionLocal
-from .models import Run, StageLog, CheckResult
-from engine import steps as S
+from .models import Run, StageLog, Config
+from engine.pipeline import run_pipeline as execute_pipeline
+from engine.checks_runner import run_checks as execute_checks
+from engine.summary import prepare_summary
+from engine.report_html import write_report_html
+from engine import steps as S, aggregates as A
 
-RUNS_DIR = pathlib.Path("runs")
+RUNS_DIR = Path('runs')
 
-# шаги и «человеческие» подписи
-PIPELINE = [
-    ("s1_discover", S.s1_discover),
-    ("s2_load", S.s2_load),
-    ("s3_flatten", S.s3_flatten),
-    ("s4_bucketize", S.s4_bucketize),
-    ("s5_union", S.s5_union),
-    ("s6_check_keys", S.s6_check_keys),
-    ("s7_compare", S.s7_compare),
-    ("s8_quality", S.s8_quality),
-    ("s9_segments", S.s9_segments),
-    ("s10_blocks", S.s10_blocks),
-    ("s11_facts", S.s11_facts),
-    ("s12_checks", S.s12_checks),
-    ("s13_summary", S.s13_summary),
-    ("s15_report", S.s15_report_html),
-]
+# Code actually executed by each stage. The path-specific field rules stay in cfg.
+STAGE_SOURCES = {
+    's1_discover': (S.discover,),
+    's2_s4_normalize': (S.load, S.flatten_pair, S.flatten, S.bucketize),
+    's5_union': (S.union,),
+    's6_check_keys': (S.check_keys,),
+    's7_compare': (S.compare,),
+    's8_quality': (S.quality,),
+    's9_segments': (S.segments,),
+    's10_blocks': (A.blocks,),
+    's11_facts': (A.facts,),
+    's12_checks': (execute_checks,),
+    's13_summary': (prepare_summary,),
+    's15_report': (write_report_html,),
+}
+
+STAGE_PARAMS = {
+    's1_discover': ('dataset', 'pool'),
+    's2_s4_normalize': ('flatten', 'xml', 'buckets', 'serialize'),
+    's5_union': (), 's6_check_keys': (), 's7_compare': (),
+    's8_quality': ('quality',), 's9_segments': ('segments',),
+    's10_blocks': ('blocks',), 's11_facts': ('facts',),
+    's12_checks': ('checks', 'check_params', 'overrides'),
+    's13_summary': ('summary', 'segments'),
+    's15_report': ('app_base_url',),
+}
 
 
-def _log(db, run_id, step, status, **kw):
-    row = StageLog(run_id=run_id, step=step, status=status, **kw)
-    db.add(row);
-    db.commit();
-    db.refresh(row)
-    return row
+def _source_for(stage: str) -> str:
+    chunks = []
+    for fn in STAGE_SOURCES.get(stage, ()):
+        try:
+            chunks.append(inspect.getsource(fn))
+        except (OSError, TypeError):
+            chunks.append(f'# Source unavailable: {fn!r}')
+    return '\n\n'.join(chunks)
+
+
+def _parameters_for(stage: str, cfg: dict) -> str:
+    keys = STAGE_PARAMS.get(stage, ())
+    return json.dumps({k: cfg.get(k) for k in keys if k in cfg}, ensure_ascii=False, default=str)
+
+
+def _now() -> dt.datetime:
+    return dt.datetime.utcnow()
 
 
 def start_run(config_id: int, user: str) -> str:
+    """Queue a run with a configuration snapshot owned by the requesting user."""
     db = SessionLocal()
     try:
-        cfg = db.get(__import__("backend.models", fromlist=["Config"]).Config, config_id)
-        if not cfg:
-            raise ValueError("config not found")
+        cfg = db.get(Config, config_id)
+        if cfg is None or cfg.owner != user:
+            raise ValueError('config not found for this user')
         run_id = uuid.uuid4().hex[:12]
-        RUNS_DIR.joinpath(run_id).mkdir(parents=True, exist_ok=True)
+        (RUNS_DIR / run_id).mkdir(parents=True, exist_ok=False)
         run = Run(id=run_id, config_id=config_id, config_snapshot=cfg.yaml,
-                  started_by=user, status="queued")
-        db.add(run);
+                  started_by=user, status='queued')
+        db.add(run)
         db.commit()
         return run_id
     finally:
         db.close()
 
 
+class _StageJournal:
+    """Sink for engine callbacks; reuses existing StageLog ORM and schema."""
+    def __init__(self, db, run_id: str, author: str, cfg: dict):
+        self.db = db
+        self.run_id = run_id
+        self.author = author
+        self.cfg = cfg
+        self.current: dict[str, StageLog] = {}
+        self.start_times: dict[str, float] = {}
+        self.active: str | None = None
+
+    def __call__(self, event: dict):
+        stage = event['step']
+        status = event['status']
+        if status == 'running':
+            row = StageLog(run_id=self.run_id, step=stage, status='running',
+                           started_by=self.author, code_snapshot=_source_for(stage),
+                           params=_parameters_for(stage, self.cfg),
+                           progress=int(event.get('progress') or 0),
+                           rows_in=event.get('rows_in'))
+            self.db.add(row)
+            self.db.commit()
+            self.current[stage] = row
+            self.start_times[stage] = time.perf_counter()
+            self.active = stage
+            return
+        row = self.current.get(stage)
+        if row is None:
+            raise RuntimeError(f'Stage {stage} emitted {status} without running event')
+        if status == 'progress':
+            row.progress = max(0, min(100, int(event.get('progress') or 0)))
+            if 'rows_in' in event:
+                row.rows_in = event['rows_in']
+            if 'rows_out' in event:
+                row.rows_out = event['rows_out']
+            self.db.commit()
+        elif status in ('done', 'failed'):
+            row.status = 'done' if status == 'done' else 'failed'
+            row.progress = 100 if status == 'done' else row.progress
+            row.rows_in = event.get('rows_in', row.rows_in)
+            row.rows_out = event.get('rows_out', row.rows_out)
+            row.message = str(event.get('message') or '')[:4000]
+            row.finished_at = _now()
+            row.duration_ms = int((time.perf_counter() - self.start_times[stage]) * 1000)
+            self.db.commit()
+            if self.active == stage:
+                self.active = None
+        else:
+            raise ValueError(f'Unknown stage status: {status}')
+
+    def fail_active(self, exc: BaseException):
+        if not self.active:
+            return
+        self({'step': self.active, 'status': 'failed',
+              'message': ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-4000:]})
+
+
 def run_pipeline(run_id: str, cfg: dict):
-    """Вызывается в фоновом потоке (threading.Thread)."""
+    """Run in a worker thread; mark done only after checks, summary and HTML."""
     db = SessionLocal()
-    run = db.get(Run, run_id)
-    run.status = "running";
-    db.commit()
-    run_dir = RUNS_DIR / run_id
-    state: dict = {"cfg": cfg, "run_dir": str(run_dir)}
-    started_by = run.started_by
-
     try:
-        for step_name, fn in PIPELINE:
-            t0 = time.time()
-            log = _log(db, run_id, step_name, "running", started_by=started_by,
-                       params=json.dumps(_safe_params(fn, state), default=str))
-            try:
-                import inspect
-                code = inspect.getsource(fn)
-                override = _find_override(step_name, cfg)
-                if override:
-                    code = f"# OVERRIDE from {override['origin']}\n{override['code']}\n\n# --- engine ---\n{code}"
-                log.code_snapshot = code
-                db.commit()
-
-                out = fn(state)
-                state[step_name] = out
-                log.status = "done"
-                log.rows_out = _rows_of(out)
-                log.message = _msg_of(out)
-            except Exception as e:
-                log.status = "failed"
-                log.message = traceback.format_exc()[-4000:]
-                run.status = "failed";
-                run.error = str(e)
-                db.commit()
-                return
-            finally:
-                log.finished_at = dt.datetime.utcnow()
-                log.duration_ms = int((time.time() - t0) * 1000)
-                db.commit()
-
-        run.status = "done"
-    except Exception as e:
-        run.status = "failed";
-        run.error = traceback.format_exc()[-4000:]
+        run = db.get(Run, run_id)
+        if run is None:
+            raise ValueError(f'Unknown run_id: {run_id}')
+        run.status = 'running'
+        run.error = None
+        db.commit()
+        journal = _StageJournal(db, run_id, run.started_by, cfg)
+        try:
+            result = execute_pipeline(cfg, RUNS_DIR / run_id, on_event=journal)
+            run.status = 'done'
+            return result
+        except Exception as exc:
+            journal.fail_active(exc)
+            run.status = 'failed'
+            run.error = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-4000:]
+            return None
+        finally:
+            run.finished_at = _now()
+            db.commit()
     finally:
-        run.finished_at = dt.datetime.utcnow()
-        db.commit();
         db.close()
 
 
 def rerun_checks(run_id: str):
-    """Перезапуск только проверок на готовом прогоне (демо новой проверки)."""
+    """Recompute checks, Verdict and HTML without touching comparison/aggregates."""
     db = SessionLocal()
-    run = db.get(Run, run_id)
-    cfg = yaml.safe_load(run.config_snapshot)
-    state = {"cfg": cfg, "run_dir": str(RUNS_DIR / run_id)}
-    log = _log(db, run_id, "s12_checks", "running", started_by=run.started_by,
-               params=json.dumps({"rerun": True}))
-    t0 = time.time()
     try:
-        out = S.s12_checks(state)
-        log.status = "done";
-        log.message = _msg_of(out);
-        log.rows_out = _rows_of(out)
-    except Exception:
-        log.status = "failed";
-        log.message = traceback.format_exc()[-4000:]
+        run = db.get(Run, run_id)
+        if run is None or run.status != 'done':
+            raise ValueError('Only a completed run may rerun checks')
+        cfg = yaml.safe_load(run.config_snapshot) or {}
+        root = RUNS_DIR / run_id
+        journal = _StageJournal(db, run_id, run.started_by, cfg)
+        try:
+            journal({'step': 's12_checks', 'status': 'running'})
+            checks_path = Path(execute_checks({'cfg': cfg, 'run_dir': str(root)}))
+            rows = json.loads(checks_path.read_text(encoding='utf-8'))
+            journal({'step': 's12_checks', 'status': 'done', 'rows_out': len(rows)})
+            journal({'step': 's13_summary', 'status': 'running'})
+            summary = prepare_summary(root, cfg)
+            journal({'step': 's13_summary', 'status': 'done', 'rows_out': summary.get('total_apps')})
+            journal({'step': 's15_report', 'status': 'running'})
+            output = write_report_html(root, cfg)
+            journal({'step': 's15_report', 'status': 'done', 'message': str(output)})
+            return str(checks_path)
+        except Exception as exc:
+            journal.fail_active(exc)
+            # The previous run's Parquet remains intact; record rerun error in stage log.
+            raise
     finally:
-        log.finished_at = dt.datetime.utcnow()
-        log.duration_ms = int((time.time() - t0) * 1000)
-        db.commit();
         db.close()
-
-
-# ---- helpers ----
-def _safe_params(fn, state):
-    try:
-        import inspect
-        sig = inspect.signature(fn)
-        return {"args": [n for n in sig.parameters]}
-    except Exception:
-        return {}
-
-
-def _rows_of(out):
-    try:
-        import pandas as pd
-        if isinstance(out, pd.DataFrame): return int(len(out))
-        if isinstance(out, (list, tuple)): return len(out)
-    except Exception:
-        pass
-    return None
-
-
-def _msg_of(out):
-    if isinstance(out, dict):
-        return json.dumps({k: v for k, v in out.items() if not hasattr(v, "shape")}, default=str)[:2000]
-    return None
-
-
-def _find_override(step_name, cfg):
-    ov = (cfg.get("overrides") or {})
-    key = step_name.replace("s", "", 1).split("_", 1)[-1]
-    ref = ov.get(key) or ov.get(step_name)
-    if not ref: return None
-    p = pathlib.Path(ref)
-    if p.exists():
-        return {"origin": str(p), "code": p.read_text()}
-    return None

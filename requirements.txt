@@ -1,4 +1,5 @@
 fastapi
+sqlalchemy
 uvicorn[standard]
 pandas>=2.1
 pyarrow

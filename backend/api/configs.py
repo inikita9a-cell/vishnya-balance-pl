@@ -30,7 +30,7 @@ def list_configs(user: str = Depends(current_user)):
 def create_config(body: ConfigIn, user: str = Depends(current_user)):
     db = SessionLocal()
     try:
-        y = body.yaml or DEFAULT.read_text()
+        y = body.yaml or DEFAULT.read_text(encoding="utf-8")
         yaml.safe_load(y)  # валидация
         c = Config(owner=user, name=body.name, yaml=y)
         db.add(c)

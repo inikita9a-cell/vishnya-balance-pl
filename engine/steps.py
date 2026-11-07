@@ -579,7 +579,7 @@ def segments(doc_pairs, comparison, cfg, quality_df=None):
 from .aggregates import blocks, facts, prepare_aggregates
 
 
-def prepare_comparison(cfg, run_dir):
+def prepare_comparison(cfg, run_dir, on_event=None):
     """Последовательный локальный прогон s1–s11 с Parquet и статусом.
 
     Старый вызов сохранён: теперь сразу пишет blocks/facts/fact_apps.
@@ -589,6 +589,10 @@ def prepare_comparison(cfg, run_dir):
     from pathlib import Path
     from time import perf_counter
     started = perf_counter()
+    def emit(step, status, **details):
+        if on_event is not None:
+            on_event({'step': step, 'status': status, **details})
+
     out = Path(run_dir)
     filenames = ['union.parquet', 'comparison.parquet', 'quality.parquet',
                  'segments.parquet', 'comparison_status.json',
@@ -603,10 +607,13 @@ def prepare_comparison(cfg, run_dir):
         manifest = json.loads(manifest_path.read_text(encoding='utf-8-sig'))
         exclude = cfg.setdefault('flatten', {}).setdefault('exclude_paths', [])
         exclude.extend(p for p in manifest.get('technical_fields_always_differ', []) if p not in exclude)
+    emit('s1_discover', 'running')
     pairs = discover(cfg['dataset'], cfg.get('pool'))
+    emit('s1_discover', 'done', rows_out=len(pairs), progress=100)
     before_rows, after_rows, issues, doc_pairs = [], [], [], []
     skipped = []
-    for pair in pairs:
+    emit('s2_s4_normalize', 'running', rows_in=len(pairs), progress=0)
+    for pair_i, pair in enumerate(pairs, 1):
         app_id = pair['APP_ID']
         start = len(issues)
         before = load(pair['file_before'], cfg, app_id=app_id, source='BEFORE', issues=issues)
@@ -618,10 +625,27 @@ def prepare_comparison(cfg, run_dir):
         b, a = flatten_pair(before or {}, after or {}, cfg, app_id=app_id, issues=issues)
         before_rows.extend(bucketize(b, cfg))
         after_rows.extend(bucketize(a, cfg))
+        if pair_i == len(pairs) or pair_i % 50 == 0:
+            emit('s2_s4_normalize', 'progress', progress=round(100 * pair_i / len(pairs)),
+                 rows_in=pair_i, rows_out=len(before_rows) + len(after_rows))
+    emit('s2_s4_normalize', 'done', progress=100, rows_in=len(pairs),
+         rows_out=len(before_rows) + len(after_rows), message=f'parse_errors: {len(skipped)}')
+    emit('s5_union', 'running')
     united = union(before_rows, after_rows)
+    emit('s5_union', 'done', rows_out=len(united), progress=100)
+    emit('s6_check_keys', 'running')
+    duplicate_count = len(check_keys(united))
+    emit('s6_check_keys', 'done', rows_in=len(united), rows_out=duplicate_count,
+         progress=100, message='duplicate normalized rows')
+    emit('s7_compare', 'running', rows_in=len(united))
     compared = compare(united, issues=issues)
+    emit('s7_compare', 'done', rows_in=len(united), rows_out=len(compared), progress=100)
+    emit('s8_quality', 'running', rows_in=len(doc_pairs))
     quality_df = quality(doc_pairs, cfg, issues)
+    emit('s8_quality', 'done', rows_out=len(quality_df), progress=100)
+    emit('s9_segments', 'running', rows_in=len(doc_pairs))
     segment_df = segments(doc_pairs, compared, cfg, quality_df)
+    emit('s9_segments', 'done', rows_out=len(segment_df), progress=100)
     out.mkdir(parents=True, exist_ok=True)
     united.to_parquet(out/'union.parquet', index=False)
     compared.to_parquet(out/'comparison.parquet', index=False)
@@ -639,4 +663,4 @@ def prepare_comparison(cfg, run_dir):
                   cause_counts={str(k): int(v) for k, v in segment_df.CAUSE.value_counts().items()},
                   duration_seconds=round(perf_counter() - started, 3))
     (out/'comparison_status.json').write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
-    return prepare_aggregates(out, cfg)
+    return prepare_aggregates(out, cfg, on_event=on_event)
