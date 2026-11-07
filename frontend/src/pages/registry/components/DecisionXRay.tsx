@@ -4,8 +4,10 @@ import { causeLabel } from '../../../api/format';
 import type { RawComparison, Segment } from '../../../api/types';
 import { Muted, QuietButton, TextButton } from '../../../components/Ui';
 import type { Application } from '../types';
+import { ApplicationExplanation } from './ApplicationExplanation';
 
 type Props = {
+  runId?: string;
   application: Application;
   segment?: Segment;
   loadingChanges: boolean;
@@ -26,7 +28,7 @@ const changeLabels: Record<string, string> = {
   VALUE_CHANGED: 'Изменилось значение', ATTRIBUTE_NEW: 'Добавлено', ATTRIBUTE_LOST: 'Удалено', TYPE_CHANGED: 'Изменился тип'
 };
 
-export function DecisionXRay({ application, segment, loadingChanges, onClose, onShowRaw, showRaw, raw, rawLoading }: Props) {
+export function DecisionXRay({ runId, application, segment, loadingChanges, onClose, onShowRaw, showRaw, raw, rawLoading }: Props) {
   const changed = application.previousDecision !== application.currentDecision;
   return <XRay aria-label={`Детали заявки ${application.id}`}>
     <Header>
@@ -38,6 +40,7 @@ export function DecisionXRay({ application, segment, loadingChanges, onClose, on
       <Close type="button" aria-label="Закрыть заявку" onClick={onClose}>×</Close>
     </Header>
     <Content>
+      {runId ? <ApplicationExplanation key={`${runId}:${application.id}`} runId={runId} appId={application.id} onShowRaw={onShowRaw} showRaw={showRaw} /> : <>
       <Overview>
         <h3>Результат сравнения</h3>
         <DecisionLine>
@@ -74,6 +77,7 @@ export function DecisionXRay({ application, segment, loadingChanges, onClose, on
           <TextButton type="button" onClick={onShowRaw}>{showRaw ? 'Скрыть исходные данные ↑' : 'Показать исходные JSON ↓'}</TextButton>
         </RawFooter>
       </Changes>
+      </>}
     </Content>
     {showRaw && <RawComparisonBlock>
       {rawLoading ? <Muted>Загрузка исходных данных…</Muted> : raw ? <RawColumns>
