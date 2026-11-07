@@ -1,7 +1,7 @@
 """Generate a self-contained HTML protocol (CSS and data inline, no CDN).
 
-The downloaded HTML retains absolute links to the running application/API.
-For links to work outside localhost, set APP_BASE_URL or config.app_base_url.
+The downloaded HTML retains absolute links to the running frontend.
+Set FRONTEND_BASE_URL / frontend_base_url when the UI uses a separate origin.
 """
 from __future__ import annotations
 
@@ -9,11 +9,28 @@ import html
 import json
 import os
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 
 def _esc(value) -> str:
     return html.escape('' if value is None else str(value), quote=True)
+
+
+def frontend_link(cfg: dict, run_id: str, app_id=None) -> str:
+    """Use the existing React query routes, including an APP_ID registry filter."""
+    base = str(cfg.get('frontend_base_url') or os.getenv('FRONTEND_BASE_URL')
+               or cfg.get('app_base_url') or os.getenv('APP_BASE_URL')
+               or 'http://127.0.0.1:5173')
+    parsed = urlsplit(base)
+    if (parsed.scheme not in ('http', 'https') or not parsed.netloc
+            or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment):
+        raise ValueError('frontend_base_url must be an absolute http(s) frontend URL without query/fragment/credentials')
+    params = {'page': 'report' if app_id is None else 'registry', 'run': str(run_id)}
+    if app_id is not None:
+        params['filters'] = json.dumps({'APP_ID': str(app_id)}, ensure_ascii=False, separators=(',', ':'))
+    path = parsed.path or '/'
+    return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(params, quote_via=quote), ''))
 
 
 def write_report_html(run_dir: str | Path, cfg: dict | None = None) -> Path:
@@ -27,9 +44,7 @@ def write_report_html(run_dir: str | Path, cfg: dict | None = None) -> Path:
     if not isinstance(summary, dict) or not isinstance(checks, list):
         raise ValueError('Invalid report data structures')
     run_id = root.name
-    base = str(cfg.get('app_base_url') or os.getenv('APP_BASE_URL', 'http://localhost:8000')).rstrip('/')
-    api = f'{base}/api/runs/{quote(run_id, safe="")}'
-    summary_url = api + '/summary'
+    summary_url = frontend_link(cfg, run_id)
 
     def row_cells(values):
         return '<tr>' + ''.join(f'<td>{_esc(v)}</td>' for v in values) + '</tr>'
@@ -48,7 +63,7 @@ def write_report_html(run_dir: str | Path, cfg: dict | None = None) -> Path:
     table_rows = []
     for item in checks:
         ids = item.get('APP_IDS') or []
-        links = ', '.join(f'<a href="{_esc(api + "/apps/" + quote(str(a), safe=""))}">{_esc(a)}</a>'
+        links = ', '.join(f'<a href="{_esc(frontend_link(cfg, run_id, a))}">{_esc(a)}</a>'
                           for a in ids[:10])
         if len(ids) > 10:
             links += f' и ещё {len(ids) - 10}'

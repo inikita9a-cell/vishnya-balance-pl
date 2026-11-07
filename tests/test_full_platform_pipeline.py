@@ -182,7 +182,8 @@ def test_report_html_standalone_and_escapes_data(tmp_path):
          'APP_IDS': ['APP A&1'], 'CNT': 1, 'TOTAL': 3, 'RESULT': 'FAIL'}]))
     path = write_report_html(tmp_path, {'app_base_url': 'https://example.org'})
     html = path.read_text(encoding='utf-8')
-    assert 'https://example.org/api/runs/' in html
+    assert 'https://example.org/?page=report' in html
+    assert '/api/runs/' not in html
     assert 'APP%20A%261' in html
     assert '<script>alert(1)</script>' not in html
     assert '<img src=x onerror=' not in html
