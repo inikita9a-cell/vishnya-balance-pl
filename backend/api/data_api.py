@@ -5,7 +5,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query
 from ..db import SessionLocal
 from ..models import Run
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ..auth import current_user
 from .. import duck
 
@@ -107,3 +107,71 @@ def sankey(rid: str, body: PivotIn, user: str = Depends(current_user)):
     if not _dir(rid).exists():
         raise HTTPException(404)
     return duck.get_sankey_data(_dir(rid), body.filters)
+
+
+# ---------------------------------------------------------------------------
+# Explorer API: field catalogue, universal aggregation, drill-down.
+# Wrappers only; all SQL lives in duck.py. Pydantic models keep the request
+# shape explicit and safe.
+# ---------------------------------------------------------------------------
+
+class ExplorerQueryIn(BaseModel):
+    groupBy: list[str] = Field(default_factory=list)
+    filters: dict = Field(default_factory=dict)
+    includeUnchanged: bool = True
+    limit: int = Field(50, ge=1, le=500)
+    offset: int = Field(0, ge=0)
+
+
+class ExplorerAppsIn(BaseModel):
+    filters: dict = Field(default_factory=dict)
+    limit: int = Field(20, ge=1, le=500)
+    offset: int = Field(0, ge=0)
+
+
+@router.get("/{rid}/explorer/fields")
+def explorer_fields(rid: str, user: str = Depends(current_user)):
+    if not _dir(rid).exists():
+        raise HTTPException(404)
+    try:
+        return duck.get_explorer_fields(_dir(rid))
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/{rid}/explorer/query")
+def explorer_query(rid: str, body: ExplorerQueryIn, user: str = Depends(current_user)):
+    if not _dir(rid).exists():
+        raise HTTPException(404)
+    try:
+        return duck.explorer_query(
+            _dir(rid),
+            group_by=body.groupBy,
+            filters=body.filters,
+            include_unchanged=body.includeUnchanged,
+            limit=body.limit,
+            offset=body.offset,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/{rid}/explorer/apps")
+def explorer_apps(rid: str, body: ExplorerAppsIn, user: str = Depends(current_user)):
+    if not _dir(rid).exists():
+        raise HTTPException(404)
+    try:
+        return duck.explorer_apps(
+            _dir(rid),
+            filters=body.filters,
+            limit=body.limit,
+            offset=body.offset,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))

@@ -319,3 +319,257 @@ def get_sankey_data(run_dir: pathlib.Path, filters: dict | None = None) -> dict:
 
     finally:
         con.close()
+
+
+# ---------------------------------------------------------------------------
+# Explorer API: fields / query / apps
+#
+# Aggregation is performed against the full run on the backend (DuckDB over
+# comparison + segments), not over rows already loaded by the frontend.
+# Filters accept the same names the caller can group by, plus CHANGE_TYPE
+# and ARRAY_KEY. NULL and missing values are distinct because CHANGE_TYPE
+# is computed by the engine (SAME / VALUE_CHANGED / ATTRIBUTE_NEW /
+# ATTRIBUTE_LOST), and ADJUSTED_* store the serialized leaf value where
+# missing is not equal to the string "NULL".
+# ---------------------------------------------------------------------------
+
+# Dimensions exposed for groupBy and filters on the comparison view.
+# Keep in sync with SEGMENT_COLUMNS in engine/steps.py if you add new ones.
+_EXPLORER_DIMENSIONS = (
+    "PATH", "PREFIX", "CLASS", "SUFFIX", "KEY", "ARRAY_KEY", "DEPTH",
+    "CHANGE_TYPE", "DIFF_FLAG",
+    "ADJUSTED_BEFORE", "ADJUSTED_AFTER",
+    "VALUE_BEFORE", "VALUE_AFTER",
+    "DECISION_BEFORE", "DECISION_AFTER", "DECISION_TRANSITION",
+    "REASON_TRANSITION", "CAUSE", "PARTNER_TYPE",
+    "PRODUCTS", "TOP_OFFER_BEFORE", "TOP_OFFER_AFTER",
+    "QUALITY_ISSUE", "COMPARISON_COMPLETE",
+)
+_EXPLORER_DIM_SET = set(_EXPLORER_DIMENSIONS)
+
+
+def _explorer_where(filters: dict | None) -> tuple[str, list]:
+    """Safe WHERE builder for explorer endpoints.
+
+    Rules:
+      * Only known dimensions are accepted. Unknown -> ValueError.
+      * Column names are quoted; values are parameterized.
+      * List values use IN; empty list means "match nothing".
+      * A NULL filter means IS NULL (never "= 'NULL'").
+    """
+    clauses, params = [], []
+    if filters is None:
+        return "", params
+    if not isinstance(filters, dict):
+        raise ValueError("filters must be a JSON object")
+
+    for field, raw in filters.items():
+        if field not in _EXPLORER_DIM_SET:
+            raise ValueError(f"Unsupported filter field: {field!r}")
+        col = '"' + field.replace('"', '""') + '"'
+
+        if isinstance(raw, (list, tuple, set)):
+            values = list(raw)
+            if not values:
+                clauses.append("FALSE")
+                continue
+            non_null = [v for v in values if v is not None and not pd.isna(v)]
+            alternatives = []
+            if non_null:
+                alternatives.append(f"{col} IN ({', '.join('?' for _ in non_null)})")
+                params.extend(non_null)
+            if any(v is None or pd.isna(v) for v in values):
+                alternatives.append(f"{col} IS NULL")
+            clauses.append("(" + " OR ".join(alternatives) + ")")
+        elif raw is None or pd.isna(raw):
+            clauses.append(f"{col} IS NULL")
+        else:
+            clauses.append(f"{col} = ?")
+            params.append(raw)
+
+    return ("WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+def _validate_group_columns(group_by: list[str]) -> list[str]:
+    seen = []
+    for col in group_by or []:
+        if not isinstance(col, str) or col not in _EXPLORER_DIM_SET:
+            raise ValueError(f"Unsupported groupBy column: {col!r}")
+        if col not in seen:
+            seen.append(col)
+    return seen
+
+
+def get_explorer_fields(run_dir: pathlib.Path) -> dict:
+    """Field catalogue: unique paths with appsCount / changedAppsCount.
+
+    Built from the full comparison view, so it's independent of any frontend
+    state. hasArrayInstances is true when at least one row of that path has
+    a non-empty ARRAY_KEY (i.e. the attribute lives inside an array element).
+    """
+    run_dir = pathlib.Path(run_dir)
+    _require_files(run_dir, "comparison")
+    con = _con(run_dir)
+    try:
+        sql = """
+            SELECT
+                PATH,
+                MIN(DEPTH) AS depth,
+                COUNT(DISTINCT APP_ID) AS apps_count,
+                COUNT(DISTINCT CASE WHEN DIFF_FLAG = 1 THEN APP_ID END) AS changed_apps_count,
+                MAX(CASE WHEN ARRAY_KEY IS NOT NULL AND ARRAY_KEY <> '' THEN 1 ELSE 0 END) AS has_array
+            FROM comparison
+            WHERE PATH IS NOT NULL
+            GROUP BY PATH
+            ORDER BY PATH
+        """
+        df = con.execute(sql).df()
+        fields = [
+            {
+                "path": row["PATH"],
+                "depth": int(row["depth"]) if pd.notna(row["depth"]) else None,
+                "appsCount": int(row["apps_count"] or 0),
+                "changedAppsCount": int(row["changed_apps_count"] or 0),
+                "hasArrayInstances": bool(row["has_array"]),
+            }
+            for _, row in df.iterrows()
+        ]
+        return {
+            "fields": fields,
+            "dimensions": list(_EXPLORER_DIMENSIONS),
+        }
+    finally:
+        con.close()
+
+
+def explorer_query(
+    run_dir: pathlib.Path,
+    group_by: list[str],
+    filters: dict | None,
+    include_unchanged: bool,
+    limit: int,
+    offset: int,
+) -> dict:
+    """Universal aggregation over comparison. Returns per-group counts.
+
+    appsCount         = COUNT(DISTINCT APP_ID) inside the group.
+    occurrencesCount  = COUNT(*) inside the group (differs from appsCount
+                        for arrays where one app has multiple elements).
+
+    When include_unchanged is False, DIFF_FLAG=0 rows are excluded from
+    aggregation so the result matches the "differences only" view.
+
+    drilldownFilters merges the caller's filters with the row's own
+    dimension values (as single-element lists), so the frontend can post them
+    verbatim to /explorer/apps.
+    """
+    run_dir = pathlib.Path(run_dir)
+    _require_files(run_dir, "comparison")
+    con = _con(run_dir)
+
+    try:
+        dims = _validate_group_columns(group_by)
+        if not dims:
+            raise ValueError("groupBy must contain at least one column")
+
+        where, params = _explorer_where(filters)
+        if not include_unchanged:
+            where = where + (" AND " if where else "WHERE ") + "DIFF_FLAG = 1"
+
+        grouping = ", ".join('"' + d.replace('"', '""') + '"' for d in dims)
+        base_sql = f"""
+            SELECT {grouping},
+                   COUNT(DISTINCT APP_ID) AS apps_count,
+                   COUNT(*) AS occurrences_count
+            FROM comparison
+            {where}
+            GROUP BY {grouping}
+            ORDER BY apps_count DESC, occurrences_count DESC
+        """
+
+        count_sql = f"SELECT COUNT(*) FROM ({base_sql}) AS grouped"
+        total_groups = int(con.execute(count_sql, params).fetchone()[0] or 0)
+
+        page_sql = base_sql + " LIMIT ? OFFSET ?"
+        df = con.execute(page_sql, params + [int(limit), int(offset)]).df()
+
+        rows = []
+        for _, row in df.iterrows():
+            values = {}
+            drilldown = dict(filters or {})
+            for d in dims:
+                v = row[d]
+                if pd.isna(v):
+                    v = None
+                values[d] = v
+                # Every grouped value becomes a single-element filter for drill-down.
+                drilldown[d] = [v] if v is not None else [None]
+            rows.append({
+                "values": values,
+                "appsCount": int(row["apps_count"] or 0),
+                "occurrencesCount": int(row["occurrences_count"] or 0),
+                "drilldownFilters": drilldown,
+            })
+
+        return {
+            "totalGroups": total_groups,
+            "rows": rows,
+            "limit": int(limit),
+            "offset": int(offset),
+        }
+    finally:
+        con.close()
+
+
+def explorer_apps(
+    run_dir: pathlib.Path,
+    filters: dict | None,
+    limit: int,
+    offset: int,
+) -> dict:
+    """Drill-down to unique APP_IDs that match the filters.
+
+    Filter application is identical to explorer_query, so the count here
+    always equals the group's appsCount for the same filters.
+    """
+    run_dir = pathlib.Path(run_dir)
+    _require_files(run_dir, "comparison", "segments")
+    con = _con(run_dir)
+    try:
+        where, params = _explorer_where(filters)
+
+        total_sql = f"SELECT COUNT(DISTINCT APP_ID) FROM comparison {where}"
+        total = int(con.execute(total_sql, params).fetchone()[0] or 0)
+
+        sql = f"""
+            SELECT c.APP_ID,
+                   s.DECISION_BEFORE, s.DECISION_AFTER,
+                   s.N_DIFFS, s.COMPARISON_COMPLETE
+            FROM (
+                SELECT DISTINCT APP_ID FROM comparison {where}
+            ) AS c
+            LEFT JOIN segments AS s ON s.APP_ID = c.APP_ID
+            ORDER BY c.APP_ID
+            LIMIT ? OFFSET ?
+        """
+        df = con.execute(sql, params + [int(limit), int(offset)]).df()
+
+        items = []
+        for _, row in df.iterrows():
+            items.append({
+                "APP_ID": row["APP_ID"],
+                "DECISION_BEFORE": None if pd.isna(row["DECISION_BEFORE"]) else row["DECISION_BEFORE"],
+                "DECISION_AFTER": None if pd.isna(row["DECISION_AFTER"]) else row["DECISION_AFTER"],
+                "N_DIFFS": int(row["N_DIFFS"]) if pd.notna(row["N_DIFFS"]) else 0,
+                "COMPARISON_COMPLETE": int(row["COMPARISON_COMPLETE"]) if pd.notna(row["COMPARISON_COMPLETE"]) else 0,
+            })
+
+        return {
+            "total": total,
+            "items": items,
+            "limit": int(limit),
+            "offset": int(offset),
+        }
+    finally:
+        con.close()
+
