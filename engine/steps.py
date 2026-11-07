@@ -600,7 +600,9 @@ def prepare_comparison(cfg, run_dir, on_event=None):
     # Проверяем до чтения датасета, чтобы повторный запуск не считал всё заново.
     if any((out / name).exists() for name in filenames):
         raise FileExistsError('Результаты уже существуют. Укажите новую папку через --out, например runs/check_002')
-    cfg = deepcopy(cfg)
+    from .procedure_runtime import (write_snapshot, snapshot_event, execute,
+                                    validate_comparison)
+    cfg = write_snapshot(cfg, out)
     root = Path(cfg['dataset']['path'])
     manifest_path = root / 'manifest.json'
     if cfg['dataset'].get('use_manifest_excludes', True) and manifest_path.exists():
@@ -611,8 +613,10 @@ def prepare_comparison(cfg, run_dir, on_event=None):
     pairs = discover(cfg['dataset'], cfg.get('pool'))
     emit('s1_discover', 'done', rows_out=len(pairs), progress=100)
     before_rows, after_rows, issues, doc_pairs = [], [], [], []
-    skipped = []
-    emit('s2_s4_normalize', 'running', rows_in=len(pairs), progress=0)
+    skipped, normalize_pairs = [], []
+    custom_normalize = 'normalize' in cfg.get('procedures', {})
+    emit('s2_s4_normalize', 'running', rows_in=len(pairs), progress=0,
+         **snapshot_event(cfg, 's2_s4_normalize'))
     for pair_i, pair in enumerate(pairs, 1):
         app_id = pair['APP_ID']
         start = len(issues)
@@ -622,12 +626,21 @@ def prepare_comparison(cfg, run_dir, on_event=None):
         if any(i['ISSUE'] == 'PARSE_ERROR' for i in issues[start:]):
             skipped.append(app_id)
             continue
-        b, a = flatten_pair(before or {}, after or {}, cfg, app_id=app_id, issues=issues)
-        before_rows.extend(bucketize(b, cfg))
-        after_rows.extend(bucketize(a, cfg))
+        if custom_normalize:
+            normalize_pairs.append(doc_pairs[-1])
+        else:
+            b, a = flatten_pair(before or {}, after or {}, cfg, app_id=app_id, issues=issues)
+            before_rows.extend(bucketize(b, cfg))
+            after_rows.extend(bucketize(a, cfg))
         if pair_i == len(pairs) or pair_i % 50 == 0:
             emit('s2_s4_normalize', 'progress', progress=round(100 * pair_i / len(pairs)),
                  rows_in=pair_i, rows_out=len(before_rows) + len(after_rows))
+    if custom_normalize:
+        normalized = execute('normalize', cfg, pairs=normalize_pairs)
+        issues.extend(normalized['issues'])
+        for b, a in normalized['rows']:
+            before_rows.extend(bucketize(b, cfg))
+            after_rows.extend(bucketize(a, cfg))
     emit('s2_s4_normalize', 'done', progress=100, rows_in=len(pairs),
          rows_out=len(before_rows) + len(after_rows), message=f'parse_errors: {len(skipped)}')
     emit('s5_union', 'running')
@@ -637,8 +650,13 @@ def prepare_comparison(cfg, run_dir, on_event=None):
     duplicate_count = len(check_keys(united))
     emit('s6_check_keys', 'done', rows_in=len(united), rows_out=duplicate_count,
          progress=100, message='duplicate normalized rows')
-    emit('s7_compare', 'running', rows_in=len(united))
-    compared = compare(united, issues=issues)
+    emit('s7_compare', 'running', rows_in=len(united), **snapshot_event(cfg, 's7_compare'))
+    if 'compare' in cfg.get('procedures', {}):
+        result = execute('compare', cfg, union_df=united)
+        compared = validate_comparison(result['frame'], united)
+        issues.extend(result['issues'])
+    else:
+        compared = compare(united, issues=issues)
     emit('s7_compare', 'done', rows_in=len(united), rows_out=len(compared), progress=100)
     emit('s8_quality', 'running', rows_in=len(doc_pairs))
     quality_df = quality(doc_pairs, cfg, issues)

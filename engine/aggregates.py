@@ -231,6 +231,8 @@ def prepare_aggregates(run_dir, cfg: dict | None = None, on_event=None) -> dict:
     Существующие артефакты не перезаписываются. Успешный запуск расширяет
     comparison_status.json. Для новых прогонов вызывается после s9.
     """
+    from .procedure_runtime import freeze_config, snapshot_event, execute, validate_facts
+    cfg = freeze_config(cfg or {})
     out = Path(run_dir)
     files = ('blocks.parquet', 'facts.parquet', 'fact_apps.parquet')
     existing = [name for name in files if (out / name).exists()]
@@ -248,8 +250,12 @@ def prepare_aggregates(run_dir, cfg: dict | None = None, on_event=None) -> dict:
     b = blocks(comp, seg, cfg)
     if on_event:
         on_event({'step': 's10_blocks', 'status': 'done', 'rows_out': len(b), 'progress': 100})
-        on_event({'step': 's11_facts', 'status': 'running', 'rows_in': len(comp)})
-    f, members = facts(comp, seg, cfg)
+        on_event({'step': 's11_facts', 'status': 'running', 'rows_in': len(comp),
+                  **snapshot_event(cfg, 's11_facts')})
+    if 'facts' in cfg.get('procedures', {}):
+        f, members = validate_facts(execute('facts', cfg, comparison=comp, segments=seg), comp, cfg)
+    else:
+        f, members = facts(comp, seg, cfg)
     # Сначала все временные файлы, затем публикация. При ошибке очищаем
     # частично опубликованные артефакты этого вызова, не трогая старый прогон.
     tag = f'{os.getpid()}-{uuid.uuid4().hex}'

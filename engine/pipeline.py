@@ -28,8 +28,11 @@ def run_pipeline(cfg: dict, run_dir: str | Path,
         if on_event:
             on_event({'step': step, 'status': status, **details})
 
+    from .procedure_runtime import write_snapshot
+    from .platform_checks_adapter import freeze_checks, checks_snapshot_event
+    cfg = write_snapshot(freeze_checks(cfg), root)
     status = prepare_comparison(cfg, root, on_event=on_event)
-    notify('s12_checks', 'running')
+    notify('s12_checks', 'running', **checks_snapshot_event(cfg))
     path = Path(run_checks({'cfg': cfg, 'run_dir': str(root)}))
     if not path.is_file():
         raise FileNotFoundError(f'Checks report not created: {path}')

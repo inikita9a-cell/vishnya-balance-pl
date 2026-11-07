@@ -24,6 +24,8 @@ from engine.checks_runner import run_checks as execute_checks
 from engine.summary import prepare_summary
 from engine.report_html import write_report_html
 from engine import steps as S, aggregates as A
+from engine.platform_procedures_adapter import resolve_run_config
+from engine.platform_checks_adapter import freeze_checks, checks_snapshot_event
 
 RUNS_DIR = Path('runs')
 
@@ -81,9 +83,11 @@ def start_run(config_id: int, user: str) -> str:
         cfg = db.get(Config, config_id)
         if cfg is None or cfg.owner != user:
             raise ValueError('config not found for this user')
+        snapshot = freeze_checks(resolve_run_config(db, user, yaml.safe_load(cfg.yaml) or {}))
         run_id = uuid.uuid4().hex[:12]
         (RUNS_DIR / run_id).mkdir(parents=True, exist_ok=False)
-        run = Run(id=run_id, config_id=config_id, config_snapshot=cfg.yaml,
+        run = Run(id=run_id, config_id=config_id,
+                  config_snapshot=yaml.safe_dump(snapshot, allow_unicode=True, sort_keys=False),
                   started_by=user, status='queued')
         db.add(run)
         db.commit()
@@ -107,9 +111,13 @@ class _StageJournal:
         stage = event['step']
         status = event['status']
         if status == 'running':
+            params = json.loads(_parameters_for(stage, self.cfg))
+            if 'procedure' in event:
+                params['procedure'] = event['procedure']
             row = StageLog(run_id=self.run_id, step=stage, status='running',
-                           started_by=self.author, code_snapshot=_source_for(stage),
-                           params=_parameters_for(stage, self.cfg),
+                           started_by=self.author,
+                           code_snapshot=event.get('code_snapshot', _source_for(stage)),
+                           params=json.dumps(params, ensure_ascii=False, default=str),
                            progress=int(event.get('progress') or 0),
                            rows_in=event.get('rows_in'))
             self.db.add(row)
@@ -187,7 +195,8 @@ def rerun_checks(run_id: str):
         root = RUNS_DIR / run_id
         journal = _StageJournal(db, run_id, run.started_by, cfg)
         try:
-            journal({'step': 's12_checks', 'status': 'running'})
+            cfg = freeze_checks(cfg)
+            journal({'step': 's12_checks', 'status': 'running', **checks_snapshot_event(cfg)})
             checks_path = Path(execute_checks({'cfg': cfg, 'run_dir': str(root)}))
             rows = json.loads(checks_path.read_text(encoding='utf-8'))
             journal({'step': 's12_checks', 'status': 'done', 'rows_out': len(rows)})
