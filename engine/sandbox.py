@@ -2,6 +2,12 @@
 from __future__ import annotations
 import json, pickle, subprocess, sys, tempfile, textwrap, pathlib, os
 
+"""Песочница (НЕ изолирует ФС/сеть): subprocess с таймаутом.
+
+Ограничения: пользовательский код имеет доступ к файлам и окружению с правами
+запускающего пользователя. Использовать только для доверенных пользователей MVP.
+"""
+
 _TIMEOUT_DEFAULT = 30
 
 RUNNER = textwrap.dedent("""
@@ -19,11 +25,14 @@ result = fn(**payload, **objs)
 pathlib.Path(out_path).write_text(json.dumps(result, default=str))
 """)
 
+
 def _is_jsonable(v) -> bool:
     try:
-        json.dumps(v); return True
+        json.dumps(v);
+        return True
     except Exception:
         return False
+
 
 def execute_user_code(code: str, entry: str, payload: dict, timeout: int = _TIMEOUT_DEFAULT):
     """payload: dict с аргументами. JSON-совместимые -> JSON; остальные -> pickle."""
@@ -54,5 +63,7 @@ def execute_user_code(code: str, entry: str, payload: dict, timeout: int = _TIME
             return False, {"error": f"timeout>{timeout}s"}
 
         if proc.returncode != 0:
-            return False, {"error": proc.stderr.decode()[-4000:]}
+            err = proc.stderr.decode("utf-8", errors="replace")[-4000:]
+            out_path.read_text(encoding="utf-8")
+            return False, {"error": err}
         return True, json.loads(out_path.read_text())

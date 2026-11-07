@@ -6,7 +6,7 @@ docker compose up --build
 - Frontend: http://localhost:5173
 
 ## Локально
-./run.sh
+./run.sh (Linux/macOS) и .\run.ps1 (Windows).
 
 ## Первые шаги
 1. Открыть фронт → ввести имя (cookie).

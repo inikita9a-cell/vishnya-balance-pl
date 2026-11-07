@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   backend:
     build:
@@ -6,16 +5,25 @@ services:
       dockerfile: Dockerfile.backend
     ports: ["8000:8000"]
     volumes:
-      - ./app.db:/app/app.db
       - ./runs:/app/runs
       - ./configs:/app/configs:ro
       - ./procedures:/app/procedures:ro
+      # датасет монтируем read-only; путь внутри конфига cfg.dataset.path должен быть /app/data
       - ./data:/app/data:ro
+      # SQLite — в отдельном каталоге, а не в отдельном файле
+      - app_db:/app/db
     environment:
       - PYTHONUNBUFFERED=1
+      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8000}
+    # Дать контейнеру возможность писать в смонтированные ./runs от имени appuser
+    user: "${UID:-1000}:${GID:-1000}"
+
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile  # Создай этот файл внутри ./frontend
+      dockerfile: Dockerfile
     ports: ["5173:80"]
     depends_on: [backend]
+
+volumes:
+  app_db:
