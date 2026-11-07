@@ -62,14 +62,63 @@ def _source_from_override(value):
     raise TypeError('Check override must be Python source or path to a .py file')
 
 
-def _prepared_check_source(cid: str, code: str, label: str) -> str:
+def _prepared_check_source(cid: str, code: str, label: str, entry: str = 'check') -> str:
     """Accept either the official CHECK contract or a plain check(mart,params)."""
     return (code + "\n\nif 'CHECK' not in globals():\n"
-            + '    _entry = globals().get("check") or globals().get("run")\n'
+            + f'    _entry = globals().get({entry!r}) or globals().get("run")\n'
             + '    if not callable(_entry):\n'
             + '        raise ValueError("Custom check must define CHECK or check(mart, params)")\n'
             + f'    CHECK = {{"id": {cid!r}, "label": {label!r}, '
             + '"params": {}, "entrypoint": _entry}\n')
+
+
+def freeze_checks(cfg: dict, checks_dir=None) -> dict:
+    """Freeze selected standard, workspace, file and legacy override sources."""
+    from .procedure_runtime import freeze_config, freeze_spec
+    cfg = freeze_config(cfg)
+    selected = _normalize_check_ids(cfg)
+    entries = {c['id']: c for c in cfg.get('checks', []) if isinstance(c, dict)}
+    base = Path(checks_dir or (_ROOT / 'procedures' / 'checks'))
+    frozen = []
+    params = dict(cfg.get('check_params') or {})
+    overrides = cfg.get('overrides') or {}
+    if not isinstance(overrides, dict):
+        raise ValueError('cfg.overrides must be a dict')
+    for cid in selected:
+        spec = entries.get(cid, {})
+        override = overrides.get(f'checks/{cid}')
+        if override is not None:
+            spec = {**spec, 'source': 'workspace', 'code': _source_from_override(override)}
+            spec.pop('sha256', None)
+            spec.pop('procedure_id', None)
+        if not any(k in spec for k in ('code', 'path', 'file')):
+            filename = base / f'check_{cid}.py'
+            if not filename.is_file():
+                frozen.append(spec or cid)  # Existing ERROR-row semantics for missing checks.
+                continue
+            spec = {**spec, 'source': 'file', 'path': str(filename)}
+        spec = freeze_spec(spec, 'check')
+        spec['id'] = cid
+        frozen.append(spec)
+        params[cid] = {**spec['params'], **params.get(cid, {})}
+    cfg['checks'] = frozen
+    cfg['check_params'] = params
+    # The original override has been resolved into the check source above.
+    cfg['overrides'] = {k: v for k, v in overrides.items() if not k.startswith('checks/')}
+    return cfg
+
+
+def checks_snapshot_event(cfg: dict) -> dict:
+    sources, specs = [], []
+    for spec in cfg.get('checks', []):
+        if not isinstance(spec, dict) or 'code' not in spec:
+            continue
+        cid = spec['id']
+        sources.append(f'# ---- check: {cid} ----\n' + _prepared_check_source(
+            cid, spec['code'], spec.get('label', cid), spec.get('entry', 'check')))
+        specs.append({k: v for k, v in spec.items() if k != 'code'})
+    return {'code_snapshot': '\n\n'.join(sources),
+            'procedure': {'kind': 'checks', 'selected': specs}}
 
 
 def _stage_checks(cfg: dict, selected: list[str], base: Path, dest: Path) -> None:
@@ -93,7 +142,8 @@ def _stage_checks(cfg: dict, selected: list[str], base: Path, dest: Path) -> Non
                 shutil.copyfile(original, target)
             # A missing check will produce an ERROR row in checks_service.
         else:
-            target.write_text(_prepared_check_source(cid, source, entry.get('label', cid)),
+            target.write_text(_prepared_check_source(cid, source, entry.get('label', cid),
+                                                     entry.get('entry', 'check')),
                               encoding='utf-8')
 
 
@@ -110,8 +160,9 @@ def run_checks(state: dict) -> str:
     run_dir = Path(state['run_dir']).resolve()
     if not run_dir.is_dir():
         raise FileNotFoundError(f'Run directory not found: {run_dir}')
-    selected = _normalize_check_ids(cfg)
     checks_dir = Path(state.get('checks_dir') or (_ROOT / 'procedures' / 'checks')).resolve()
+    cfg = freeze_checks(cfg, checks_dir)
+    selected = _normalize_check_ids(cfg)
     snapshot = {**cfg, 'checks': selected}
     timeout = float(state.get('checks_timeout', 120))
     if timeout <= 0:

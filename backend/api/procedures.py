@@ -1,7 +1,8 @@
-import pathlib
+# backend/api/procedures.py
+import pathlib, yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from ..auth import current_user, get_procedure_owned, get_run_owned
+from ..auth import current_user
 from ..db import SessionLocal
 from ..models import Procedure
 from engine.sandbox import execute_user_code
@@ -12,7 +13,7 @@ router = APIRouter(prefix="/api/procedures", tags=["procedures"])
 
 class ProcIn(BaseModel):
     kind: str
-    source: str = "workspace"
+    source: str = "workspace"  # file|workspace
     path: str | None = None
     code: str | None = None
 
@@ -40,8 +41,8 @@ def create_proc(body: ProcIn, user: str = Depends(current_user)):
     try:
         p = Procedure(owner=user, kind=body.kind, source=body.source,
                       path=body.path, code=body.code)
-        db.add(p)
-        db.commit()
+        db.add(p);
+        db.commit();
         db.refresh(p)
         return {"id": p.id}
     finally:
@@ -50,16 +51,16 @@ def create_proc(body: ProcIn, user: str = Depends(current_user)):
 
 @router.post("/{pid}/try")
 def try_proc(pid: int, body: TryIn, user: str = Depends(current_user)):
-    # Owner процедуры и (если передан) owner прогона проверяются отдельно.
-    proc = get_procedure_owned(pid, user)
-    if body.run_id:
-        get_run_owned(body.run_id, user)  # 404 для чужого прогона
-
-    code = body.code or (pathlib.Path(proc.path).read_text() if proc.path else proc.code)
-    if not code:
-        raise HTTPException(400, "no code")
-
-    mart = Mart(str(pathlib.Path("runs") / body.run_id)) if body.run_id else None
-    ok, out = execute_user_code(code, body.entry,
-                                {"app_ids": body.app_ids, "mart": mart})
-    return {"ok": ok, "result": out}
+    """Выполнить процедуру на 1–3 заявках в песочнице. Для редактора."""
+    db = SessionLocal()
+    try:
+        p = db.get(Procedure, pid)
+        if not p: raise HTTPException(404)
+        code = body.code or (pathlib.Path(p.path).read_text() if p.path else p.code)
+        if not code: raise HTTPException(400, "no code")
+        mart = Mart(str(pathlib.Path("runs") / body.run_id)) if body.run_id else None
+        ok, out = execute_user_code(code, body.entry,
+                                    {"app_ids": body.app_ids, "mart": mart})
+        return {"ok": ok, "result": out}
+    finally:
+        db.close()
