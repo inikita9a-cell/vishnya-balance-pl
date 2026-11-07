@@ -107,17 +107,17 @@ def app_rows(rid: str, app_id: str, diff_only: int = Query(0),
 @router.get("/{rid}/apps/{app_id}/raw")
 def app_raw(rid: str, app_id: str, user: str = Depends(current_user)):
     get_run_owned(rid, user)
+    if not app_id or app_id in ('.', '..') or '/' in app_id or '\\' in app_id:
+        raise HTTPException(400, 'invalid app id')
     d = _dir(rid)
     out = {}
     for tag in ("BEFORE_MASTER", "AFTER_BETA"):
         for ext in ("json", "xml"):
             p = d / "raw" / tag / f"{app_id}.{ext}"
             if p.exists():
-                out[tag] = p.read_text()
+                out[tag] = p.read_text(encoding="utf-8-sig")
                 break
     if not out:
-        if pathlib.Path(app_id).name != app_id or app_id in ('.', '..'):
-            raise HTTPException(400, 'invalid app id')
         db = SessionLocal()
         try:
             run = db.get(Run, rid)

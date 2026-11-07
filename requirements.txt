@@ -10,3 +10,4 @@ pyyaml
 numpy
 jupyter
 pytest
+python-multipart

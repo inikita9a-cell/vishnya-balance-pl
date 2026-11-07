@@ -1,16 +1,26 @@
 """Server-side config validation. Keeps all schema rules in one place."""
 from __future__ import annotations
 import pathlib
+import math
 from typing import Any
 
 ALLOWED_DATASET_FORMATS = {"json", "xml"}
-ALLOWED_POOL_MODES = {"all", "list", "filter"}
+ALLOWED_POOL_MODES = {"all", "list"}  # discover() does not implement pool.filter yet
 ALLOWED_ARRAY_MODES = {"field", "index", "value"}
 REQUIRED_TOP_KEYS = ("dataset", "flatten")
 
 
 def _is_str(v: Any) -> bool:
     return isinstance(v, str) and v.strip() != ""
+
+
+def _finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _err(errors: list[dict], path: str, message: str, level: str = "error"):
@@ -34,7 +44,7 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
             _err(errors, key, f"Required section missing: {key}")
 
     # --- dataset ---------------------------------------------------------
-    ds = cfg.get("dataset") or {}
+    ds = cfg.get("dataset", {})
     if not isinstance(ds, dict):
         _err(errors, "dataset", "Must be an object")
     else:
@@ -46,7 +56,7 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
             if not isinstance(formats, list) or not formats:
                 _err(errors, "dataset.formats", "Must be a non-empty list")
             else:
-                bad = [f for f in formats if f not in ALLOWED_DATASET_FORMATS]
+                bad = [f for f in formats if not isinstance(f, str) or f not in ALLOWED_DATASET_FORMATS]
                 if bad:
                     _err(errors, "dataset.formats",
                          f"Unsupported formats: {bad}. Allowed: {sorted(ALLOWED_DATASET_FORMATS)}")
@@ -63,12 +73,12 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
                              f"Directory not found: {base / sub}", level="warning")
 
     # --- pool ------------------------------------------------------------
-    pool = cfg.get("pool") or {}
+    pool = cfg.get("pool", {})
     if not isinstance(pool, dict):
         _err(errors, "pool", "Must be an object")
     else:
         mode = pool.get("mode", "all")
-        if mode not in ALLOWED_POOL_MODES:
+        if not isinstance(mode, str) or mode not in ALLOWED_POOL_MODES:
             _err(errors, "pool.mode", f"Allowed: {sorted(ALLOWED_POOL_MODES)}")
         if mode == "list":
             ids = pool.get("app_ids")
@@ -80,13 +90,21 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
             _err(errors, "pool.filter", "Required when mode=filter")
 
     # --- flatten ---------------------------------------------------------
-    fl = cfg.get("flatten") or {}
+    fl = cfg.get("flatten", {})
     if not isinstance(fl, dict):
         _err(errors, "flatten", "Must be an object")
     else:
         max_depth = fl.get("max_depth", 10)
-        if not isinstance(max_depth, int) or max_depth < 1:
+        if type(max_depth) is not int or max_depth < 1:
             _err(errors, "flatten.max_depth", "Must be a positive integer")
+        for key in ('auto_key', 'track_order'):
+            if key in fl and type(fl[key]) is not bool:
+                _err(errors, f'flatten.{key}', 'Must be boolean')
+        for key in ('sep_array_key', 'sep_composite'):
+            if key in fl and not _is_str(fl[key]):
+                _err(errors, f'flatten.{key}', 'Must be a non-empty string')
+        if fl.get('sep_array_key', '|') == fl.get('sep_composite', '+'):
+            _err(errors, 'flatten.sep_composite', 'Array and composite separators must differ')
         for key in ("exclude_paths", "include_paths"):
             v = fl.get(key)
             if v is not None and (not isinstance(v, list) or any(not isinstance(x, str) for x in v)):
@@ -104,7 +122,7 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
                         _err(errors, f"flatten.arrays.{tpl}", "Rule must be an object")
                         continue
                     mode = rule.get("mode")
-                    if mode not in ALLOWED_ARRAY_MODES:
+                    if not isinstance(mode, str) or mode not in ALLOWED_ARRAY_MODES:
                         _err(errors, f"flatten.arrays.{tpl}.mode",
                              f"Allowed: {sorted(ALLOWED_ARRAY_MODES)}")
                     if mode == "field":
@@ -117,8 +135,8 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
             _err(errors, "flatten.auto_key_candidates", "Must be a list of strings")
 
     # --- buckets ---------------------------------------------------------
-    bc = cfg.get("buckets") or {}
-    if bc and not isinstance(bc, dict):
+    bc = cfg.get("buckets", {})
+    if not isinstance(bc, dict):
         _err(errors, "buckets", "Must be an object")
     elif bc:
         for key in ("default_unit", "default_num"):
@@ -129,13 +147,15 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
                 _err(errors, f"buckets.{key}", "Must be a list of at least 2 numbers")
                 continue
             try:
+                if any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in edges):
+                    raise ValueError('Expected numbers')
                 nums = [float(x) for x in edges]
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 _err(errors, f"buckets.{key}", "All boundaries must be numbers")
                 continue
-            if any(b <= a for a, b in zip(nums, nums[1:])):
-                _err(errors, f"buckets.{key}", "Boundaries must be strictly increasing")
-        by_path = bc.get("by_path") or {}
+            if any(not math.isfinite(x) for x in nums) or any(b <= a for a, b in zip(nums, nums[1:])):
+                _err(errors, f"buckets.{key}", "Boundaries must be finite and strictly increasing")
+        by_path = bc.get("by_path", {})
         if not isinstance(by_path, dict):
             _err(errors, "buckets.by_path", "Must be an object {path_template: [edges]}")
         else:
@@ -144,10 +164,13 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
                     _err(errors, "buckets.by_path", "Empty path template")
                 if not isinstance(edges, list) or len(edges) < 2:
                     _err(errors, f"buckets.by_path.{path}", "Must be at least 2 numbers")
+                elif (any(not _finite_number(x) for x in edges)
+                      or any(b <= a for a, b in zip(edges, edges[1:]))):
+                    _err(errors, f"buckets.by_path.{path}", "Boundaries must be finite numbers, strictly increasing")
 
     # --- segments --------------------------------------------------------
-    seg = cfg.get("segments") or {}
-    if seg and not isinstance(seg, dict):
+    seg = cfg.get("segments", {})
+    if not isinstance(seg, dict):
         _err(errors, "segments", "Must be an object")
     elif seg:
         for key in ("input_paths", "logic_paths"):
@@ -157,12 +180,15 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
         for key in ("decision", "reject_reason", "reject_code", "products",
                     "top_offer", "partner_type", "routing", "pd_model", "cutoff", "score_okb"):
             v = seg.get(key)
-            if v is not None and not _is_str(v):
-                _err(errors, f"segments.{key}", "Must be a non-empty path string")
+            if isinstance(v, dict):
+                if not _is_str(v.get('path')) or not isinstance(v.get('where', {}), dict):
+                    _err(errors, f"segments.{key}", "Selector needs path string and optional where object")
+            elif v is not None and not _is_str(v):
+                _err(errors, f"segments.{key}", "Must be a path string or {path, where} selector")
 
     # --- quality ---------------------------------------------------------
-    qc = cfg.get("quality") or {}
-    if qc and not isinstance(qc, dict):
+    qc = cfg.get("quality", {})
+    if not isinstance(qc, dict):
         _err(errors, "quality", "Must be an object")
     elif qc:
         rp = qc.get("required_paths")
@@ -174,9 +200,17 @@ def validate_config(cfg: dict, *, check_dataset: bool = True) -> dict:
                 _err(errors, "quality.reason_rules", "Must be a list")
             else:
                 for i, rule in enumerate(rules):
-                    if not isinstance(rule, dict) or "when" not in rule or "require" not in rule:
-                        _err(errors, f"quality.reason_rules[{i}]",
-                             "Each rule needs 'when' and 'require'")
+                    try:
+                        if not isinstance(rule, dict):
+                            raise ValueError('Rule must be an object')
+                        from engine.steps import _reason_rule
+                        condition, _, required = _reason_rule(rule, cfg)
+                        if not _is_str(condition) or not _is_str(required):
+                            raise ValueError('Condition and required paths must be strings')
+                        if 'scope_path' in rule and not isinstance(rule['scope_path'], str):
+                            raise ValueError('scope_path must be a string')
+                    except (KeyError, TypeError, ValueError, SyntaxError) as exc:
+                        _err(errors, f"quality.reason_rules[{i}]", str(exc))
 
     # --- checks ----------------------------------------------------------
     checks = cfg.get("checks")

@@ -1,54 +1,39 @@
-"""Cookie-based session for the hackathon MVP.
+# backend/api/auth.py
+from fastapi import APIRouter, Request, Response, Depends, HTTPException
+from pydantic import BaseModel
+from ..auth import current_user, COOKIE
+from ..db import get_db, SessionLocal
+from ..models import User
 
-WARNING: The cookie is set from a user-supplied name and is NOT a secure
-authentication mechanism. Anyone who knows a name can impersonate it by
-setting the same cookie. This is acceptable only inside a trusted network
-behind the demo. For a public deployment, replace `current_user` with real
-auth (password, OAuth, or signed JWT) and keep the rest of the code intact.
-"""
-from fastapi import Request, HTTPException
-from .db import SessionLocal
-from .models import Run, Config, Procedure
-
-COOKIE = "spr_user"
+router = APIRouter(prefix="/api", tags=["auth"])
 
 
-def current_user(request: Request) -> str:
-    name = request.cookies.get(COOKIE)
-    if not name:
-        raise HTTPException(401, "login required")
-    return name
+class LoginIn(BaseModel):
+    name: str
 
 
-def get_run_owned(run_id: str, user: str) -> Run:
-    """Fetch Run and enforce ownership. 404 (not 403) to avoid leaking existence."""
+@router.post("/login")
+def login(body: LoginIn, response: Response):
+    name = body.name.strip()
+    if not 1 <= len(name) <= 64:
+        raise HTTPException(400, "bad name")
     db = SessionLocal()
     try:
-        run = db.get(Run, run_id)
-        if not run or run.started_by != user:
-            raise HTTPException(404, "run not found")
-        return run
+        if not db.query(User).filter_by(name=name).first():
+            db.add(User(name=name));
+            db.commit()
     finally:
         db.close()
+    response.set_cookie(COOKIE, name, httponly=True, samesite="lax")
+    return {"name": name}
 
 
-def get_config_owned(cid: int, user: str) -> Config:
-    db = SessionLocal()
-    try:
-        cfg = db.get(Config, cid)
-        if not cfg or cfg.owner != user:
-            raise HTTPException(404, "config not found")
-        return cfg
-    finally:
-        db.close()
+@router.get("/me")
+def me(user: str = Depends(current_user)):
+    return {"name": user}
 
 
-def get_procedure_owned(pid: int, user: str) -> Procedure:
-    db = SessionLocal()
-    try:
-        proc = db.get(Procedure, pid)
-        if not proc or proc.owner != user:
-            raise HTTPException(404, "procedure not found")
-        return proc
-    finally:
-        db.close()
+@router.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(COOKIE)
+    return {"ok": True}

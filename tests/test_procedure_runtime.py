@@ -111,6 +111,8 @@ def database(monkeypatch, tmp_path):
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(runs, 'SessionLocal', factory)
+    from backend import auth as backend_auth
+    monkeypatch.setattr(backend_auth, 'SessionLocal', factory)
     monkeypatch.setattr(runs, 'RUNS_DIR', tmp_path / 'runs')
     return factory
 

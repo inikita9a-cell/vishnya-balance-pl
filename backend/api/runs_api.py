@@ -2,10 +2,12 @@
 import json, threading, yaml, pathlib
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from ..auth import current_user
+from ..auth import current_user, get_run_owned, get_config_owned
+from ..validation import validate_config
 from ..db import SessionLocal
 from ..models import Run, StageLog, Config
 from ..runs import start_run, run_pipeline, rerun_checks
+from engine.check_jobs import queue_checks, execute_job, get_job, latest_job, mark_failed, CheckJobError
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -16,7 +18,18 @@ class RunIn(BaseModel):
 
 @router.post("")
 def create_run(body: RunIn, user: str = Depends(current_user)):
-    rid = start_run(body.config_id, user)
+    saved = get_config_owned(body.config_id, user)
+    try:
+        cfg = yaml.safe_load(saved.yaml) or {}
+        validation = validate_config(cfg, check_dataset=True)
+    except (yaml.YAMLError, ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not validation['valid'] or any(w['path'].startswith('dataset.') for w in validation['warnings']):
+        raise HTTPException(422, {"detail": "Invalid run config", "report": validation})
+    try:
+        rid = start_run(body.config_id, user)
+    except (ValueError, TypeError, OSError) as exc:
+        raise HTTPException(422, str(exc)) from exc
     db = SessionLocal()
     try:
         run = db.get(Run, rid)
@@ -43,7 +56,7 @@ def list_runs(user: str = Depends(current_user)):
         return [{"id": r.id, "status": r.status, "started_by": r.started_by,
                  "created_at": r.created_at, "finished_at": r.finished_at,
                  "config_id": r.config_id}
-                for r in db.query(Run).order_by(Run.created_at.desc()).all()]
+                for r in db.query(Run).filter(Run.started_by == user).order_by(Run.created_at.desc()).all()]
     finally:
         db.close()
 
@@ -53,7 +66,7 @@ def get_run(rid: str, user: str = Depends(current_user)):
     db = SessionLocal()
     try:
         r = db.get(Run, rid)
-        if not r: raise HTTPException(404)
+        if not r or r.started_by != user: raise HTTPException(404)
         logs = db.query(StageLog).filter(StageLog.run_id == rid).order_by(StageLog.id).all()
         return {"id": r.id, "status": r.status, "error": r.error,
                 "started_by": r.started_by, "created_at": r.created_at,
@@ -68,6 +81,7 @@ def get_run(rid: str, user: str = Depends(current_user)):
 
 @router.get("/{rid}/steps/{step}")
 def get_step(rid: str, step: str, user: str = Depends(current_user)):
+    get_run_owned(rid, user)
     db = SessionLocal()
     try:
         l = db.query(StageLog).filter_by(run_id=rid, step=step).order_by(StageLog.id.desc()).first()
@@ -80,14 +94,47 @@ def get_step(rid: str, step: str, user: str = Depends(current_user)):
         db.close()
 
 
+class ChecksRerunIn(BaseModel):
+    config_id: int | None = None
+    checks: list[str | dict] | None = None
+    check_params: dict | None = None
+
+
 @router.post("/{rid}/checks/rerun")
-def rerun(rid: str, user: str = Depends(current_user)):
-    threading.Thread(target=rerun_checks, args=(rid,), daemon=True).start()
-    return {"ok": True}
+def rerun(rid: str, body: ChecksRerunIn | None = None, user: str = Depends(current_user)):
+    try:
+        job = queue_checks(rid, user, **(body.model_dump() if body else {}))
+    except CheckJobError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    except (ValueError, OSError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        threading.Thread(target=execute_job, args=(rid, job['job_id']), daemon=True).start()
+    except Exception as exc:
+        mark_failed(rid, job['job_id'], exc)
+        raise HTTPException(500, 'Could not start checks worker') from exc
+    return {"ok": True, **job}
+
+
+@router.get("/{rid}/checks/jobs/{job_id}")
+def check_job_status(rid: str, job_id: str, user: str = Depends(current_user)):
+    try:
+        return get_job(rid, job_id, user)
+    except CheckJobError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@router.get("/{rid}/checks/status")
+def latest_check_job(rid: str, user: str = Depends(current_user)):
+    try:
+        return {"job": latest_job(rid, user)}
+    except CheckJobError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @router.get("/{rid}/report.html")
 def report(rid: str, user: str = Depends(current_user)):
+    get_run_owned(rid, user)
     p = pathlib.Path("runs") / rid / "report.html"
     if not p.exists(): raise HTTPException(404)
     from fastapi.responses import FileResponse

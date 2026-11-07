@@ -85,7 +85,7 @@ def get_config(cid: int, user: str = Depends(current_user)):
 @router.post("")
 def create_config(body: ConfigIn, user: str = Depends(current_user)):
     """Create new config. `yaml=null` -> empty skeleton; `yaml` string -> as-is."""
-    text = body.yaml if body.yaml is not None else "dataset:\n  path: data\nflatten:\n  max_depth: 10\n"
+    text = body.yaml if body.yaml is not None else "dataset:\n  path: data\n  before_dir: RESULTS/BEFORE_MASTER\n  after_dir: RESULTS/AFTER_BETA\n  formats: [json, xml]\nflatten:\n  max_depth: 10\n"
     try:
         cfg = yaml.safe_load(text) or {}
     except yaml.YAMLError as e:
@@ -106,7 +106,10 @@ def create_config(body: ConfigIn, user: str = Depends(current_user)):
 
 @router.put("/{cid}")
 def update_config(cid: int, body: ConfigIn, user: str = Depends(current_user)):
-    text = body.yaml if body.yaml is not None else ""
+    # A rename without YAML preserves the saved configuration.
+    from ..auth import get_config_owned
+    saved = get_config_owned(cid, user)
+    text = body.yaml if body.yaml is not None else saved.yaml
     try:
         cfg = yaml.safe_load(text) or {}
     except yaml.YAMLError as e:

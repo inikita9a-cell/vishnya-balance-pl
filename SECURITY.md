@@ -9,8 +9,9 @@
 
 ## Ownership
 - Every `Config`, `Procedure` and `Run` carries an `owner` / `started_by` field.
-- All read/update endpoints call `get_*_owned(...)`. Foreign IDs return **404**
-  (not 403) to avoid leaking existence.
+- Ownership guards cover run data, logs, HTML, previews, attachments, check jobs
+  and config updates. Foreign resource URLs return **404** to avoid leaking
+  existence; invalid procedure selections are rejected before execution.
 - `GET /api/runs` returns only the current user's runs.
 - `config_snapshot` in `Run` is immutable — old runs remain reproducible after
   the user edits the config.

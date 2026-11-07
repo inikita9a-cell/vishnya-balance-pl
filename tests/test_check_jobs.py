@@ -47,6 +47,8 @@ def system(tmp_path, monkeypatch):
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(runs, 'SessionLocal', factory)
+    from backend import auth as backend_auth
+    monkeypatch.setattr(backend_auth, 'SessionLocal', factory)
     monkeypatch.setattr(runs, 'RUNS_DIR', tmp_path / 'runs')
     monkeypatch.setattr(runs_api, 'SessionLocal', factory)
     monkeypatch.setattr(procedures, 'SessionLocal', factory)
@@ -221,7 +223,7 @@ def test_ownership_on_queue_poll_latest_and_attach(system):
         db.commit()
         pid = proc.id
     assert s['client'].post(f'/api/procedures/{pid}/attach', json={
-        'config_id': s['cid'], 'check_id': 'foreign'}).status_code == 400
+        'config_id': s['cid'], 'check_id': 'foreign'}).status_code == 404
     s['app'].dependency_overrides[current_user] = lambda: 'bob'
     for method, path in [
         ('post', f'/api/runs/{s["rid"]}/checks/rerun'),
