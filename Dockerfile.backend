@@ -26,8 +26,8 @@ COPY procedures ./procedures
 
 # 5. Создаём непривилегированного пользователя и папки для данных
 # Это решает проблему с правами на запись в SQLite (app.db) и runs/
-RUN useradd -m -u 1000 appuser && \
-    mkdir -p /app/runs /app/data && \
+RUN useradd --create-home --uid 1000 --user-group appuser && \
+    mkdir -p /app/runs /app/data /app/db && \
     chown -R appuser:appuser /app
 
 USER appuser

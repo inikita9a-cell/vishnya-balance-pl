@@ -3,27 +3,31 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    ports: ["8000:8000"]
+    ports:
+      - "8000:8000"
     volumes:
+      # On Linux, make sure the host runs/ directory is writable by UID 1000.
       - ./runs:/app/runs
       - ./configs:/app/configs:ro
       - ./procedures:/app/procedures:ro
-      # датасет монтируем read-only; путь внутри конфига cfg.dataset.path должен быть /app/data
-      - ./data:/app/data:ro
-      # SQLite — в отдельном каталоге, а не в отдельном файле
+      # Set DATASET_HOST_DIR to the host folder containing dataset run folders.
+      - ${DATASET_HOST_DIR:-./data}:/app/data:ro
+      # A Docker-managed directory, initialized with the ownership of /app/db.
       - app_db:/app/db
     environment:
-      - PYTHONUNBUFFERED=1
-      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8000}
-    # Дать контейнеру возможность писать в смонтированные ./runs от имени appuser
-    user: "${UID:-1000}:${GID:-1000}"
+      PYTHONUNBUFFERED: "1"
+      DB_DIR: /app/db
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8000}
+    # Do not override the image's appuser: UID 1000 must own /app/db.
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports: ["5173:80"]
-    depends_on: [backend]
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
 
 volumes:
   app_db:

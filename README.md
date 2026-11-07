@@ -1,26 +1,105 @@
-# README — запуск
+# SPR Change Analysis — запуск и проверка
 
-## Быстрый старт (Docker)
+Система сравнивает результаты стратегии BEFORE и AFTER, строит витрины Parquet,
+проверки, вердикт и самостоятельный HTML-протокол. Реализация шагов обработки
+находится в `engine/`; API и фоновые запуски — в `backend/`.
+
+## Быстрый запуск на Windows
+
+Из корня репозитория в PowerShell:
+
+```powershell
+.\run.ps1
+```
+
+Скрипт создаёт `.venv`, устанавливает `requirements.txt`, поднимает FastAPI и,
+если в `frontend/` имеется `package.json`, запускает Vite. Для одного бэкенда:
+
+```powershell
+.\run.ps1 -BackendOnly
+```
+
+При работе с PowerShell без разрешения на локальные `.ps1` запусти из нового окна:
+`powershell -ExecutionPolicy Bypass -File .\run.ps1`.
+Остановка — `Ctrl+C`. Python и Node.js/npm должны быть установлены.
+
+- Swagger API: http://127.0.0.1:8000/docs
+- Локальный фронтенд Vite (если доступен): обычно http://localhost:5173
+
+## Linux/macOS
+
+```bash
+./run.sh
+```
+
+Перед запуском убедись, что существует `frontend/package.json`.
+
+## Docker
+
+Требуются Docker Compose, `frontend/Dockerfile` и рабочий фронтенд.
+**Фронтенд Dockerfile не входит в этот бэкенд-патч:** его поставляет команда фронта.
+Бэкенд можно запускать отдельно:
+
+```bash
+docker compose up --build backend
+```
+
+Для общего запуска:
+
+```bash
 docker compose up --build
-- Backend: http://localhost:8000/docs
-- Frontend: http://localhost:5173
+```
 
-## Локально
-./run.sh (Linux/macOS) и .\run.ps1 (Windows).
+Перед запуском размести датасет в `./data/<RUN_ID>/RESULTS/...` либо укажи
+путь на хосте через `DATASET_HOST_DIR` (каталог с подпапками запусков).
+В конфиге для Docker указывай путь **внутри контейнера**:
+`dataset.path: /app/data/<RUN_ID>`. Путь `D:/...` из Windows не сработает внутри Linux-контейнера.
 
-## Первые шаги
-1. Открыть фронт → ввести имя (cookie).
-2. Configs → создать пресет (или взять `configs/default_spr.yaml`).
-3. Runs → «Запустить» → наблюдать этапы (кто/время/строки/код).
-4. Проверки → «Перезапустить только проверки» → обновится `checks.json`.
-5. «Скачать HTML-протокол» → `runs/<id>/report.html`.
+Пример PowerShell, если данные вне проекта:
 
-## Песочница
-`POST /api/procedures` (workspace|file) → `POST /api/procedures/{id}/try`.
-Контракт: функция `entry(mart=None, app_ids=[], params={}) -> dict|list`.
-Таймаут 30 с, subprocess, ошибка → в журнал, приложение живо.
+```powershell
+$env:DATASET_HOST_DIR = 'D:/path/to/data'
+docker compose up --build backend
+```
 
-## Что в TODO
-- Полные тела s3, s7, s9, s11 (flatten/compare/segments/facts) — блок 1.
-- Mart.segments() — пробросить run_dir.
-- LLM-блок на фронте — скрыт без LLM_API_KEY.
+SQLite хранится в именованном Docker volume `app_db` (внутри `/app/db/app.db`).
+В локальном запуске — в `./db/app.db`. **Это разные базы**, они не синхронизируются.
+На Linux примонтированная `./runs` должна быть доступна пользователю контейнера
+`appuser` (UID 1000); при ошибках прав создай её и выдай права владельцу 1000.
+Контейнер запускается не от root. Переменную `APP_BASE_URL` установи во внешний
+адрес сервера, если ссылки в HTML будут открываться с других компьютеров.
+
+## Прогон на данных и тесты
+
+```bash
+python -m pytest -q tests
+python -m engine.pipeline --dataset "PATH_TO_RUN_DATASET" --out runs/check_demo
+```
+
+Ожидаемые артефакты: `comparison.parquet`, `segments.parquet`, `blocks.parquet`,
+`facts.parquet`, `fact_apps.parquet`, `checks.json`, `summary.json`, `report.html`.
+Числа зависят от выбранного датасета. Сквозной запуск формирует журнал шагов,
+`checks.json` и отчёт; по API его можно запустить через `POST /api/runs`.
+
+## Основной сценарий UI
+
+1. Войти по имени; создать конфигурацию/пресет с реальным путём к датасету.
+2. Запустить обработку, дождаться статуса `done` и открыть Summary.
+3. В сводной изменить измерения, нажать на `CNT` и открыть список заявок.
+4. Открыть заявку, проверить атрибуты до/после и исходные ответы.
+5. Открыть проверки, скачать HTML; обновить страницу и вернуться к запуску.
+
+## Пользовательский код
+
+Процедуры запускаются через `engine/sandbox.py` в subprocess с таймаутом 30 с.
+Это **не изолированная песочница**: код имеет доступ к файловой системе, сети и
+окружению с правами процесса. Использовать только для доверенных пользователей.
+Проверки в `procedures/checks/` обрабатываются через наш MartAPI.
+
+## Что ещё обязательно проверить перед защитой
+
+- Сборка фронтенда (его `package.json` / `Dockerfile` передаются командой фронта).
+- Запуск Docker на чистой машине, права `runs` и БД, доступность датасета.
+- Pivot → drill-down → заявка, совпадение уникальных `APP_ID` для разных фильтров.
+- Повторный запуск проверок, авторизация, восстановление запуска после обновления страницы.
+- Если включён LLM — `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` и пакет `openai`.
