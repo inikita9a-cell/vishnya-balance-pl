@@ -1,16 +1,30 @@
-# Python
+# Python bytecode & cache
 __pycache__/
-*.pyc
-.venv/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.pyd
+.pyo
+
+# Environments (если создаете venv внутри репы)
+.env
+.venv
 env/
+venv/
+ENV/
 
-# Данные хакатона (чтобы гит не упал от тяжелых файлов)
-data/
-*.csv
-*.xlsx
-*.parquet
-.ipynb_checkpoints/
+# Project artifacts (То, что просил Клод)
+runs/
 
-# Настройки IDE
+# IDEs and editors
 .idea/
 .vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# OS junk
+.DS_Store
+Thumbs.db
