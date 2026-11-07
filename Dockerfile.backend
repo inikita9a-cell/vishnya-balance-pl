@@ -1,0 +1,38 @@
+# Dockerfile.backend
+FROM python:3.11-slim
+
+# 1. Отключаем создание .pyc и включаем вывод логов без буферизации
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# 2. Устанавливаем системные зависимости (нужны для сборки некоторых пакетов и работы DuckDB)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 3. Сначала копируем только requirements.txt, чтобы кэшировать слой с зависимостями
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# 4. Копируем исходный код
+COPY engine ./engine
+COPY backend ./backend
+COPY configs ./configs
+COPY procedures ./procedures
+
+# 5. Создаём непривилегированного пользователя и папки для данных
+# Это решает проблему с правами на запись в SQLite (app.db) и runs/
+RUN useradd -m -u 1000 appuser && \
+    mkdir -p /app/runs /app/data && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+EXPOSE 8000
+
+# 6. Запускаем через uvicorn
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
