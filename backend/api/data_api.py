@@ -96,3 +96,14 @@ def quality(rid: str, user: str = Depends(current_user)):
     if not p.exists(): raise HTTPException(404)
     import pandas as pd
     return pd.read_parquet(p).head(500).to_dict(orient="records")
+
+
+@router.post("/{rid}/sankey")
+def sankey(rid: str, body: PivotIn, user: str = Depends(current_user)):
+    """
+    Возвращает данные для диаграммы Санкей (ECharts).
+    Принимает те же фильтры, что и /pivot.
+    """
+    if not _dir(rid).exists():
+        raise HTTPException(404)
+    return duck.get_sankey_data(_dir(rid), body.filters)

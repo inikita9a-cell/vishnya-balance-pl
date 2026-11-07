@@ -197,3 +197,125 @@ def app_rows(run_dir: pathlib.Path, app_id: str, diff_only: bool) -> list[dict]:
         return df.to_dict(orient="records")
     finally:
         con.close()
+
+
+def _sankey_clean(val: str | None, default: str = "НЕТ ДАННЫХ") -> str:
+    """Приводит значения к строкам для ECharts. NULL и пустые строки заменяет на default."""
+    if val is None or str(val).strip() == "" or str(val).lower() == "nan":
+        return default
+    return str(val)
+
+
+def get_sankey_data(run_dir: pathlib.Path, filters: dict | None = None) -> dict:
+    """
+    Возвращает узлы и связи для диаграммы Санкей (ECharts).
+    Строится по переходам DECISION_BEFORE -> DECISION_AFTER -> REASON_TRANSITION.
+    """
+    run_dir = pathlib.Path(run_dir)
+    _require_files(run_dir, "segments")
+    con = _con(run_dir)
+
+    try:
+        # Используем уже готовую логику _where для фильтров.
+        # Ограничиваем доступные для фильтрации колонки теми, что есть в segments.
+        allowed_dims = {
+            "DECISION_BEFORE", "DECISION_AFTER", "DECISION_TRANSITION",
+            "REASON_BEFORE", "REASON_AFTER", "REASON_TRANSITION",
+            "CAUSE", "PARTNER_TYPE", "ROUTING_METHOD"
+        }
+        where, params = _where(filters, allowed_dims)
+
+        # Запрашиваем переходы и считаем количество уникальных APP_ID
+        sql = f"""
+            SELECT
+                DECISION_BEFORE,
+                DECISION_AFTER,
+                REASON_TRANSITION,
+                COUNT(DISTINCT APP_ID) AS CNT
+            FROM segments
+            {where}
+            GROUP BY 1, 2, 3
+            ORDER BY CNT DESC
+        """
+        df = con.execute(sql, params).df()
+
+        if df.empty:
+            return {"nodes": [], "links": []}
+
+        # Формируем данные для ECharts
+        nodes_set = set()
+        links = []
+
+        # Чтобы Санкей не путалась, узлы разных уровней (решения vs причины)
+        # должны иметь уникальные имена.
+        # Уровень 1: BEFORE; Уровень 2: AFTER; Уровень 3: Причины (только для AFTER=REJECT).
+
+        for _, row in df.iterrows():
+            before = _sankey_clean(row["DECISION_BEFORE"])
+            after = _sankey_clean(row["DECISION_AFTER"])
+            reason = _sankey_clean(row["REASON_TRANSITION"])
+            cnt = int(row["CNT"])
+
+            if cnt == 0:
+                continue
+
+            # Добавляем узлы
+            nodes_set.add(before)
+            nodes_set.add(after)
+
+            # Связь: BEFORE -> AFTER
+            links.append({
+                "source": before,
+                "target": after,
+                "value": cnt
+            })
+
+            # Если в AFTER решение REJECT, то добавляем ветку к причинам
+            # (Можно также добавить ветку для APPROVE, если есть причины)
+            if after == "REJECT" and reason and reason != "НЕТ ДАННЫХ":
+                # Чтобы не было коллизий имен (если причина называется как решение),
+                # добавляем префикс "Причина: "
+                reason_node = f"Причина: {reason}"
+                nodes_set.add(reason_node)
+                links.append({
+                    "source": after,
+                    "target": reason_node,
+                    "value": cnt
+                })
+            elif after == "APPROVE":
+                # Для одобрений можно добавить "Одобрено"
+                approve_node = "Одобрено"
+                nodes_set.add(approve_node)
+                links.append({
+                    "source": after,
+                    "target": approve_node,
+                    "value": cnt
+                })
+
+        # Группируем одинаковые связи (ECharts требует уникальные пары source-target)
+        # Например, если разные причины вели к одному REJECT
+        grouped_links = {}
+        for link in links:
+            key = (link["source"], link["target"])
+            grouped_links[key] = grouped_links.get(key, 0) + link["value"]
+
+        final_links = [
+            {"source": s, "target": t, "value": v}
+            for (s, t), v in grouped_links.items() if v > 0
+        ]
+
+        # Сортируем узлы: сначала все BEFORE, потом AFTER, потом причины/одобрения
+        # (ECharts сам разложит по уровням, но так красивее)
+        def node_sort_key(name):
+            if name in ("APPROVE", "REJECT", "НЕТ ДАННЫХ"):
+                return (1, name)
+            if name in ("Одобрено",) or name.startswith("Причина: "):
+                return (3, name)
+            return (2, name)
+
+        nodes = [{"name": name} for name in sorted(nodes_set, key=node_sort_key)]
+
+        return {"nodes": nodes, "links": final_links}
+
+    finally:
+        con.close()
