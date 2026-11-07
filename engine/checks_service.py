@@ -84,13 +84,22 @@ def _normalize_row(row: dict, check_id: str, label: str, elapsed: float) -> dict
         raise ValueError('CHECK.LABEL must be a string')
     values['CHECK_ID'] = check_id
     values['DURATION_MS'] = round(elapsed * 1000, 3)
+
+    # Optional: filters that reproduce this row's CNT from MartAPI.
+    # Any check may return FILTERS: {column: value | [values]}.
+    filters = values.get('FILTERS')
+    if filters is not None and not isinstance(filters, dict):
+        raise ValueError('CHECK.FILTERS must be a dict or omitted')
+    values['FILTERS'] = filters  # None if omitted
+
     return values
 
 
 def _error_row(check_id: str, label: str, exc: Exception, elapsed: float) -> dict:
     return dict(CHECK_ID=check_id, LABEL=label, SOURCE='AFTER', ARGUMENT='',
-                CNT=0, TOTAL=0, METRIC=None, APP_IDS=[], RESULT='ERROR',
-                CONFIDENCE='LOW', DURATION_MS=round(elapsed * 1000, 3),
+                CNT=0, TOTAL=0, METRIC=None, APP_IDS=[], FILTERS=None,
+                RESULT='ERROR', CONFIDENCE='LOW',
+                DURATION_MS=round(elapsed * 1000, 3),
                 ERROR=f'{type(exc).__name__}: {exc}',
                 TRACEBACK=traceback.format_exc(limit=12))
 

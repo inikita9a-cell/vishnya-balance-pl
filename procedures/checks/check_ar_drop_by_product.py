@@ -36,6 +36,9 @@ def run(mart, params=None):
             "APP_IDS": sorted(d["lost"])[:p["app_ids_limit"]],
             "RESULT": "FAIL" if failed else "PASS",
             "CONFIDENCE": "LOW" if len(d["lost"]) < p["low_confidence_cnt"] else "HIGH",
+            "FILTERS": {
+                "APP_ID": sorted(d["lost"]),  # или минимальный набор фильтров MartAPI
+            }
         })
     return rows
 
