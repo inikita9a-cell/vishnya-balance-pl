@@ -72,6 +72,11 @@ quality:
   required_paths: [appData.application_id, decisionResult.decision]
   reason_rules:
     - {when_path: decisionResult.decision, when_value: REJECT, require_path: decisionResult.product_trials.rejectReasonCode}
+    # Каждый отказ по продукту должен иметь свою причину.
+    - scope_path: decisionResult.product_trials
+      when_path: decision
+      when_value: REJECT
+      require_path: rejectReasonCode
 
 checks: [ar_drop_by_product, attribute_new_loss, external_score_drift, stop_factor_disappeared, target_model_changed]
 check_params: {}

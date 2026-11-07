@@ -1,4 +1,4 @@
-"""Локальный запуск этапов до витрины сравнения."""
+"""Локальный запуск этапов до витрины сравнения и разрезов."""
 import argparse
 import json
 import yaml
@@ -15,7 +15,11 @@ def main():
         cfg = yaml.safe_load(f)
     if args.dataset:
         cfg['dataset']['path'] = args.dataset
-    print(json.dumps(prepare_comparison(cfg, args.out), ensure_ascii=False, indent=2))
+    try:
+        status = prepare_comparison(cfg, args.out)
+    except FileExistsError as exc:
+        parser.exit(2, f"{exc}\n")
+    print(json.dumps(status, ensure_ascii=False, indent=2))
 
 
 if __name__ == '__main__':

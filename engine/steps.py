@@ -357,15 +357,240 @@ def compare(union_df, *, issues=None):
     return merged[columns].sort_values(ROW_KEY).reset_index(drop=True)
 
 
-def prepare_comparison(cfg, run_dir):
-    """Исполняет доступную часть s1–s7, сохраняет parquet и диагностику.
+# Селекторы работают по исходным документам, независимо от include/exclude.
+def _select(doc, path):
+    """Вернуть (значение, родитель, адрес) по пути без индексов; * и ** допустимы."""
+    from fnmatch import fnmatchcase
+    parts = path.split('.') if path else []
+    found = []
+    def walk(value, index, parent, address):
+        if isinstance(value, list):
+            for i, child in enumerate(value):
+                walk(child, index, value, f'{address}[{i}]')
+            return
+        if index == len(parts):
+            found.append((value, parent, address))
+            return
+        if parts[index] == '**':
+            walk(value, index + 1, parent, address)
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    walk(child, index, value, f'{address}.{key}' if address else key)
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                if fnmatchcase(key, parts[index]):
+                    walk(child, index + 1, value, f'{address}.{key}' if address else key)
+    if doc is not None:
+        walk(doc, 0, None, '')
+    # ** может прийти к одному адресу разными путями.
+    return list({address: (value, parent, address) for value, parent, address in found}.values())
 
-    Отдельный последовательный прогон для разработки. Не заменяет будущий
-    фоновый оркестратор. Повреждённая пара целиком исключается из сравнения:
-    сбой парсинга не означает исчезновение всех её атрибутов.
+
+def _present(value):
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list)):
+        return bool(value)
+    return True  # 0 и False — существующие значения.
+
+
+def _segment_values(doc, spec):
+    if not spec or doc is None:
+        return []
+    path = spec if isinstance(spec, str) else spec['path']
+    where = {} if isinstance(spec, str) else spec.get('where', {})
+    values = []
+    for value, parent, _ in _select(doc, path):
+        if not _present(value) or isinstance(value, (dict, list)):
+            continue
+        if where and not all(any(serialize(v) == serialize(expected)
+                                 for v, _, _ in _select(parent, key))
+                             for key, expected in where.items()):
+            continue
+        values.append(serialize(value))
+    return values
+
+
+def _reason_rule(rule, cfg):
+    """Оба формата конфига: явные пути или when: alias == literal; без eval."""
+    import ast
+    if 'when_path' in rule:
+        return rule['when_path'], rule['when_value'], rule['require_path']
+    try:
+        expr = ast.parse(rule['when'], mode='eval').body
+        if not (isinstance(expr, ast.Compare) and isinstance(expr.left, ast.Name)
+                and len(expr.ops) == 1 and isinstance(expr.ops[0], ast.Eq)
+                and isinstance(expr.comparators[0], ast.Constant)):
+            raise ValueError('Only alias == literal is supported')
+        aliases = cfg['segments']
+        condition = aliases[expr.left.id]
+        required = aliases[rule['require']]
+        if not isinstance(condition, str) or not isinstance(required, str):
+            raise ValueError('Reason rule aliases must be paths')
+        return condition, expr.comparators[0].value, required
+    except (KeyError, SyntaxError, IndexError) as exc:
+        raise ValueError('Invalid quality reason rule') from exc
+
+
+def quality(doc_pairs, cfg, existing_issues=()):
+    """s8: таблица проблем чтения, нормализации и полноты исходных документов.
+
+    doc_pairs: iterable {APP_ID, BEFORE: dict|None, AFTER: dict|None}.
+    None — отсутствующий/непрочитанный документ, его проблему передаёт load.
+    Обязательные пути проверяются в каждом найденном родительском объекте.
+    reason_rules: без scope_path достаточно одной непустой причины; со scope_path
+    условие и причина проверяются внутри каждого объекта отдельно. Пути внутри
+    scope относительные. Никакого исполнения выражений из конфигурации нет.
+    """
+    import pandas as pd
+    qc = cfg.get('quality', {})
+    rules = [(rule, _reason_rule(rule, cfg)) for rule in qc.get('reason_rules', [])]
+    issues = [dict(issue) for issue in existing_issues]
+    for pair in doc_pairs:
+        app_id = str(pair['APP_ID'])
+        for source in ('BEFORE', 'AFTER'):
+            doc = pair.get(source)
+            if doc is None:
+                continue
+            def report(kind, path, details):
+                issues.append(dict(APP_ID=app_id, SOURCE=source, ISSUE=kind, PATH=path, DETAILS=details))
+            for path in qc.get('required_paths', []):
+                parent_path, _, key = path.rpartition('.')
+                parents = _select(doc, parent_path)
+                if not parents:
+                    report('REQUIRED_FIELD_MISSING', path, 'Parent object absent or empty array')
+                else:
+                    for parent, _, address in parents:
+                        if not any(_present(v) for v, _, _ in _select(parent, key)):
+                            report('REQUIRED_FIELD_MISSING', path,
+                                   f'Missing, null or empty field at {address or "root"}')
+            for rule, (condition, expected, required) in rules:
+                scope = rule.get('scope_path', '')
+                for obj, _, address in _select(doc, scope):
+                    triggered = any(serialize(v) == serialize(expected) for v, _, _ in _select(obj, condition))
+                    if triggered and not any(_present(v) for v, _, _ in _select(obj, required)):
+                        report('DECISION_WITHOUT_REASON', f'{scope}.{required}' if scope else required,
+                               f'{address or "root"}: {condition} == {serialize(expected)}; reason absent/null/empty')
+    result = pd.DataFrame(issues, columns=QUALITY_COLUMNS).astype('string').drop_duplicates()
+    return result.sort_values(['APP_ID', 'SOURCE', 'ISSUE', 'PATH', 'DETAILS']).reset_index(drop=True)
+
+
+SEGMENT_COLUMNS = [
+    'APP_ID', 'DECISION_BEFORE', 'DECISION_AFTER', 'DECISION_CHANGED', 'DECISION_TRANSITION',
+    'REASON_BEFORE', 'REASON_AFTER', 'REASON_TRANSITION', 'PRODUCTS',
+    'TOP_OFFER_BEFORE', 'TOP_OFFER_AFTER', 'PARTNER_TYPE', 'ROUTING_METHOD',
+    'PD_MODEL_BEFORE', 'PD_MODEL_AFTER', 'CUTOFF_BEFORE', 'CUTOFF_AFTER',
+    'REJECT_REASON_BEFORE', 'REJECT_REASON_AFTER', 'SCORE_OKB_BEFORE', 'SCORE_OKB_AFTER',
+    'HAS_DIFF', 'N_DIFFS', 'CHANGED_BLOCKS', 'CAUSE', 'CAUSE_DETAIL', 'QUALITY_ISSUE',
+    'DECISION_COMPARABLE', 'COMPARISON_COMPLETE', 'CHANGED_INPUT', 'CHANGED_LOGIC',
+    'PD_MODELS_BEFORE', 'PD_MODELS_AFTER', 'CUTOFFS_BEFORE', 'CUTOFFS_AFTER',
+]
+
+
+def segments(doc_pairs, comparison, cfg, quality_df=None):
+    """s9: одна строка на заявку, включая отсутствующие и повреждённые пары.
+
+    Разрезы читаются из исходных документов по конфигу. PRODUCTS/причины/партнёры
+    — сортированные уникальные значения через ';'. Одиночные модель/порог —
+    самое частое значение, при равенстве лексикографический порядок; полные
+    множества сохраняются дополнительно в PD_MODELS/CUTOFFS.
+    CAUSE показывает расположение наблюдаемых различий, а не доказанную причину:
+    INPUT_DATA / LOGIC / BOTH / NONE. CAUSE_DETAIL — первое правило из конфига.
+    При неизвестном решении DECISION_CHANGED=0 и DECISION_COMPARABLE=0.
+    HAS_DIFF/N_DIFFS описывают доступные строки; COMPARISON_COMPLETE=0 означает,
+    что нулевое число различий нельзя считать доказательством равенства.
+    """
+    import pandas as pd
+    from collections import Counter
+    sc = cfg.get('segments', {})
+    input_match = PathMatcher(sc.get('input_paths', []))
+    logic_match = PathMatcher(sc.get('logic_paths', []))
+    details = [(name, PathMatcher(paths)) for name, paths in sc.get('cause_detail', {}).items()]
+    changed = comparison.loc[comparison['DIFF_FLAG'].eq(1)]
+    diff_counts = changed.groupby('APP_ID').size().to_dict()
+    diff_paths = changed.groupby('APP_ID')['PATH'].agg(lambda x: sorted(set(x))).to_dict()
+    issue_apps, incomplete_apps = set(), set()
+    technical = {'PARSE_ERROR', 'APP_MISSING_BEFORE', 'APP_MISSING_AFTER', 'DUPLICATE_KEY',
+                 'DEPTH_TRUNCATED', 'ARRAY_KEY_MISSING', 'ARRAY_KEY_FALLBACK'}
+    if quality_df is not None and not quality_df.empty:
+        issue_apps = set(quality_df['APP_ID'])
+        incomplete_apps = set(quality_df.loc[quality_df['ISSUE'].isin(technical), 'APP_ID'])
+    def joined(values):
+        return ';'.join(sorted(set(values))) or None
+    def dominant(values):
+        if not values:
+            return None
+        counts = Counter(values)
+        return min(counts, key=lambda value: (-counts[value], value))
+    result, seen = [], set()
+    for pair in doc_pairs:
+        app_id = str(pair['APP_ID'])
+        if app_id in seen:
+            raise ValueError(f'Duplicate document pair: {app_id}')
+        seen.add(app_id)
+        row = dict.fromkeys(SEGMENT_COLUMNS)
+        row['APP_ID'] = app_id
+        combined = {'PRODUCTS': [], 'PARTNER_TYPE': [], 'ROUTING_METHOD': []}
+        for source in ('BEFORE', 'AFTER'):
+            doc = pair.get(source)
+            for output, field in [('DECISION', 'decision'), ('TOP_OFFER', 'top_offer'),
+                                  ('PD_MODEL', 'pd_model'), ('CUTOFF', 'cutoff'), ('SCORE_OKB', 'score_okb')]:
+                values = _segment_values(doc, sc.get(field))
+                row[f'{output}_{source}'] = dominant(values)
+                if output in ('PD_MODEL', 'CUTOFF'):
+                    row[f'{"PD_MODELS" if output == "PD_MODEL" else "CUTOFFS"}_{source}'] = joined(values)
+            row[f'REASON_{source}'] = joined(_segment_values(doc, sc.get('reject_code')))
+            row[f'REJECT_REASON_{source}'] = joined(_segment_values(doc, sc.get('reject_reason')))
+            for output, field in [('PRODUCTS', 'products'), ('PARTNER_TYPE', 'partner_type'), ('ROUTING_METHOD', 'routing')]:
+                combined[output].extend(_segment_values(doc, sc.get(field)))
+        row.update({output: joined(values) for output, values in combined.items()})
+        before, after = row['DECISION_BEFORE'], row['DECISION_AFTER']
+        row['DECISION_COMPARABLE'] = int(before is not None and after is not None)
+        row['DECISION_CHANGED'] = int(bool(row['DECISION_COMPARABLE']) and before != after)
+        row['DECISION_TRANSITION'] = f'{before}→{after}' if row['DECISION_COMPARABLE'] else None
+        rb, ra = row['REASON_BEFORE'], row['REASON_AFTER']
+        # Отсутствующая причина в корректном документе — нормальна для одобрения.
+        row['REASON_TRANSITION'] = (f'{rb or "∅"}→{ra or "∅"}'
+                                    if row['DECISION_COMPARABLE'] else None)
+        paths = diff_paths.get(app_id, [])
+        row['N_DIFFS'] = int(diff_counts.get(app_id, 0))
+        row['HAS_DIFF'] = int(row['N_DIFFS'] > 0)
+        row['CHANGED_BLOCKS'] = ';'.join(sorted({'.'.join(p.split('.')[:2]) for p in paths}))
+        inp = any(input_match.match(path) for path in paths)
+        logic = any(logic_match.match(path) for path in paths)
+        row['CHANGED_INPUT'], row['CHANGED_LOGIC'] = int(inp), int(logic)
+        row['CAUSE'] = 'BOTH' if inp and logic else 'INPUT_DATA' if inp else 'LOGIC' if logic else 'NONE'
+        row['CAUSE_DETAIL'] = next((name for name, matcher in details if any(matcher.match(p) for p in paths)),
+                                   'OTHER' if paths else 'NONE')
+        row['QUALITY_ISSUE'] = int(app_id in issue_apps)
+        row['COMPARISON_COMPLETE'] = int(app_id not in incomplete_apps and
+                                         pair.get('BEFORE') is not None and pair.get('AFTER') is not None)
+        result.append(row)
+    frame = pd.DataFrame(result, columns=SEGMENT_COLUMNS)
+    integers = {'DECISION_CHANGED', 'HAS_DIFF', 'N_DIFFS', 'QUALITY_ISSUE', 'DECISION_COMPARABLE',
+                'COMPARISON_COMPLETE', 'CHANGED_INPUT', 'CHANGED_LOGIC'}
+    for col in SEGMENT_COLUMNS:
+        frame[col] = frame[col].astype('int64' if col in integers else 'string')
+    return frame.sort_values('APP_ID').reset_index(drop=True)
+
+
+def prepare_comparison(cfg, run_dir):
+    """Последовательный локальный прогон s1–s9 с Parquet и техническим статусом.
+
+    Старый вызов сохранён. Выход теперь включает segments.parquet.
+    Это не финальный summary и не фоновый оркестратор платформы.
     """
     from pathlib import Path
-    import pandas as pd
+    from time import perf_counter
+    started = perf_counter()
+    out = Path(run_dir)
+    filenames = ['union.parquet', 'comparison.parquet', 'quality.parquet',
+                 'segments.parquet', 'comparison_status.json']
+    # Проверяем до чтения датасета, чтобы повторный запуск не считал всё заново.
+    if any((out / name).exists() for name in filenames):
+        raise FileExistsError('Результаты уже существуют. Укажите новую папку через --out, например runs/check_002')
     cfg = deepcopy(cfg)
     root = Path(cfg['dataset']['path'])
     manifest_path = root / 'manifest.json'
@@ -374,13 +599,14 @@ def prepare_comparison(cfg, run_dir):
         exclude = cfg.setdefault('flatten', {}).setdefault('exclude_paths', [])
         exclude.extend(p for p in manifest.get('technical_fields_always_differ', []) if p not in exclude)
     pairs = discover(cfg['dataset'], cfg.get('pool'))
-    before_rows, after_rows, issues = [], [], []
+    before_rows, after_rows, issues, doc_pairs = [], [], [], []
     skipped = []
     for pair in pairs:
         app_id = pair['APP_ID']
         start = len(issues)
         before = load(pair['file_before'], cfg, app_id=app_id, source='BEFORE', issues=issues)
         after = load(pair['file_after'], cfg, app_id=app_id, source='AFTER', issues=issues)
+        doc_pairs.append(dict(APP_ID=app_id, BEFORE=before, AFTER=after))
         if any(i['ISSUE'] == 'PARSE_ERROR' for i in issues[start:]):
             skipped.append(app_id)
             continue
@@ -389,19 +615,23 @@ def prepare_comparison(cfg, run_dir):
         after_rows.extend(bucketize(a, cfg))
     united = union(before_rows, after_rows)
     compared = compare(united, issues=issues)
-    quality = pd.DataFrame(issues, columns=QUALITY_COLUMNS).astype('string').drop_duplicates()
-    out = Path(run_dir)
+    quality_df = quality(doc_pairs, cfg, issues)
+    segment_df = segments(doc_pairs, compared, cfg, quality_df)
     out.mkdir(parents=True, exist_ok=True)
-    # Не затираем артефакты другого/предыдущего запуска.
-    filenames = ['union.parquet', 'comparison.parquet', 'quality.parquet', 'comparison_status.json']
-    if any((out / name).exists() for name in filenames):
-        raise FileExistsError('Choose a fresh run directory')
     united.to_parquet(out/'union.parquet', index=False)
     compared.to_parquet(out/'comparison.parquet', index=False)
-    quality.to_parquet(out/'quality.parquet', index=False)
-    status = dict(stage='comparison', total_apps=len(pairs), union_rows=len(united),
+    quality_df.to_parquet(out/'quality.parquet', index=False)
+    segment_df.to_parquet(out/'segments.parquet', index=False)
+    status = dict(stage='segments', total_apps=len(pairs), union_rows=len(united),
                   comparison_rows=len(compared), diff_rows=int(compared.DIFF_FLAG.sum()),
-                  quality_issues=len(quality), skipped_parse_app_ids=skipped,
-                  incomplete=bool(len(quality)))
+                  quality_issues=len(quality_df), skipped_parse_app_ids=skipped,
+                  incomplete=bool(len(quality_df)), segment_rows=len(segment_df),
+                  apps_with_diff=int(segment_df.HAS_DIFF.sum()),
+                  apps_decision_changed=int(segment_df.DECISION_CHANGED.sum()),
+                  apps_decision_comparable=int(segment_df.DECISION_COMPARABLE.sum()),
+                  apps_with_quality_issues=int(segment_df.QUALITY_ISSUE.sum()),
+                  apps_comparison_incomplete=int(segment_df.COMPARISON_COMPLETE.eq(0).sum()),
+                  cause_counts={str(k): int(v) for k, v in segment_df.CAUSE.value_counts().items()},
+                  duration_seconds=round(perf_counter() - started, 3))
     (out/'comparison_status.json').write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
     return status
