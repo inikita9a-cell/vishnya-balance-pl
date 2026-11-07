@@ -230,3 +230,178 @@ def bucketize(rows, cfg):
             out['ADJUSTED_VALUE'] = text
         result.append(out)
     return result
+
+
+NORMAL_COLUMNS = ['APP_ID', 'SOURCE', 'PREFIX', 'CLASS', 'SUFFIX', 'ARRAY_KEY',
+                  'KEY', 'PATH', 'DEPTH', 'VALUE', 'ADJUSTED_VALUE']
+ROW_KEY = ['APP_ID', 'PATH', 'ARRAY_KEY']
+QUALITY_COLUMNS = ['APP_ID', 'ISSUE', 'SOURCE', 'PATH', 'DETAILS']
+
+
+def discover(dataset, pool=None):
+    """s1: возвращает пары файлов, включая сироты, в порядке APP_ID.
+
+    Идентификатор — имя файла без расширения. Два файла с одним ID в срезе
+    неоднозначны: ошибка конфигурации. Пустой/неверный каталог — ошибка,
+    а отсутствие отдельной заявки допустимо. pool.filter требует segments
+    и на этом этапе явно отклоняется.
+    """
+    from pathlib import Path
+    root = Path(dataset['path'])
+    pool = pool or {'mode': 'all'}
+    mode = pool.get('mode', 'all')
+    if mode not in ('all', 'list'):
+        raise ValueError('pool.filter requires segments; use all or list at this stage')
+    formats = {'.' + x.lower().lstrip('.') for x in dataset.get('formats', ['json', 'xml'])}
+    sides = []
+    for field in ('before_dir', 'after_dir'):
+        directory = root / dataset[field]
+        if not directory.is_dir():
+            raise ValueError(f'Dataset directory not found: {directory}')
+        files = {}
+        for path in sorted(directory.iterdir()):
+            if path.is_file() and path.suffix.lower() in formats:
+                if path.stem in files:
+                    raise ValueError(f'Ambiguous APP_ID {path.stem}: {files[path.stem]} and {path}')
+                files[path.stem] = str(path)
+        sides.append(files)
+    ids = set(sides[0]) | set(sides[1])
+    if mode == 'list':
+        ids = set(map(str, pool.get('app_ids', [])))
+    return [{'APP_ID': app_id, 'file_before': sides[0].get(app_id),
+             'file_after': sides[1].get(app_id)} for app_id in sorted(ids)]
+
+
+def load(file, cfg, *, app_id=None, source=None, issues=None):
+    """s2: читает документ; ошибка файла возвращает None и PARSE_ERROR.
+
+    None отличается от корректного пустого объекта {}. Отсутствующий путь
+    регистрируется как APP_MISSING_BEFORE/AFTER. Ошибки одного файла не
+    прерывают обработку остальных заявок.
+    """
+    from .adapters import read_any
+    issues = issues if issues is not None else []
+    if file is None:
+        issues.append(dict(APP_ID=app_id, SOURCE=source, ISSUE=f'APP_MISSING_{source}',
+                           PATH='', DETAILS='File absent from dataset'))
+        return None
+    try:
+        return read_any(file, cfg)
+    except Exception as exc:
+        issues.append(dict(APP_ID=app_id, SOURCE=source, ISSUE='PARSE_ERROR', PATH='',
+                           DETAILS=f'{file}: {type(exc).__name__}: {exc}'))
+        return None
+
+
+def union(rows_before, rows_after):
+    """s5: вертикальный DataFrame с SOURCE, включая стабильную пустую схему."""
+    import pandas as pd
+    frames = []
+    for rows, source in ((rows_before, 'BEFORE'), (rows_after, 'AFTER')):
+        df = pd.DataFrame(rows).copy()
+        if not df.empty:
+            missing = set(NORMAL_COLUMNS) - {'SOURCE'} - set(df.columns)
+            if missing:
+                raise ValueError(f'Missing normalized columns: {sorted(missing)}')
+        df['SOURCE'] = source
+        frames.append(df.reindex(columns=NORMAL_COLUMNS))
+    result = pd.concat(frames, ignore_index=True)
+    for col in NORMAL_COLUMNS:
+        result[col] = result[col].astype('int64' if col == 'DEPTH' else 'string')
+    if result[ROW_KEY].isna().any().any():
+        raise ValueError('Null row key')
+    return result
+
+
+def check_keys(union_df):
+    """s6: все строки с дублирующимся (SOURCE, APP_ID, PATH, ARRAY_KEY)."""
+    return union_df.loc[union_df.duplicated(['SOURCE'] + ROW_KEY, keep=False)].copy()
+
+
+def compare(union_df, *, issues=None):
+    """s7: outer merge с четырьмя CHANGE_TYPE, DIFF_FLAG строго по VALUE.
+
+    Неоднозначный ключ исключается ИЗ ОБОИХ срезов с DUPLICATE_KEY, чтобы
+    не создавать ложные NEW/LOST и декартово произведение. Результат такого
+    запуска неполон; диагностику нужно показывать вместе с витриной.
+    NULL, пустая строка и отсутствие атрибута различаются через merge indicator.
+    """
+    import pandas as pd
+    issues = issues if issues is not None else []
+    df = union_df.copy()
+    if not df['SOURCE'].isin(['BEFORE', 'AFTER']).all():
+        raise ValueError('SOURCE must be BEFORE or AFTER')
+    duplicates = check_keys(df)
+    for row in duplicates.drop_duplicates(['SOURCE'] + ROW_KEY).to_dict('records'):
+        issues.append(dict(APP_ID=row['APP_ID'], SOURCE=row['SOURCE'], ISSUE='DUPLICATE_KEY',
+                           PATH=row['PATH'], DETAILS=f"Excluded ambiguous key: {row['ARRAY_KEY']}"))
+    if not duplicates.empty:
+        bad = pd.MultiIndex.from_frame(duplicates[ROW_KEY].drop_duplicates())
+        df = df.loc[~pd.MultiIndex.from_frame(df[ROW_KEY]).isin(bad)]
+    before = df.loc[df.SOURCE == 'BEFORE'].drop(columns='SOURCE')
+    after = df.loc[df.SOURCE == 'AFTER'].drop(columns='SOURCE')
+    merged = before.merge(after, on=ROW_KEY, how='outer', suffixes=('_BEFORE', '_AFTER'),
+                          indicator=True, validate='one_to_one')
+    for col in ['PREFIX', 'CLASS', 'SUFFIX', 'KEY', 'DEPTH']:
+        merged[col] = merged[col+'_BEFORE'].where(merged[col+'_BEFORE'].notna(), merged[col+'_AFTER'])
+    merged = merged.rename(columns={'ADJUSTED_VALUE_BEFORE':'ADJUSTED_BEFORE',
+                                     'ADJUSTED_VALUE_AFTER':'ADJUSTED_AFTER'})
+    merged['CHANGE_TYPE'] = 'SAME'
+    merged.loc[merged['_merge'] == 'left_only', 'CHANGE_TYPE'] = 'ATTRIBUTE_LOST'
+    merged.loc[merged['_merge'] == 'right_only', 'CHANGE_TYPE'] = 'ATTRIBUTE_NEW'
+    changed = merged.VALUE_BEFORE.ne(merged.VALUE_AFTER).fillna(False)
+    merged.loc[(merged['_merge'] == 'both') & changed, 'CHANGE_TYPE'] = 'VALUE_CHANGED'
+    merged['DIFF_FLAG'] = merged.CHANGE_TYPE.ne('SAME').astype('int64')
+    columns = ['APP_ID', 'PREFIX', 'CLASS', 'SUFFIX', 'ARRAY_KEY', 'KEY', 'PATH', 'DEPTH',
+               'VALUE_BEFORE', 'VALUE_AFTER', 'ADJUSTED_BEFORE', 'ADJUSTED_AFTER', 'DIFF_FLAG', 'CHANGE_TYPE']
+    return merged[columns].sort_values(ROW_KEY).reset_index(drop=True)
+
+
+def prepare_comparison(cfg, run_dir):
+    """Исполняет доступную часть s1–s7, сохраняет parquet и диагностику.
+
+    Отдельный последовательный прогон для разработки. Не заменяет будущий
+    фоновый оркестратор. Повреждённая пара целиком исключается из сравнения:
+    сбой парсинга не означает исчезновение всех её атрибутов.
+    """
+    from pathlib import Path
+    import pandas as pd
+    cfg = deepcopy(cfg)
+    root = Path(cfg['dataset']['path'])
+    manifest_path = root / 'manifest.json'
+    if cfg['dataset'].get('use_manifest_excludes', True) and manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8-sig'))
+        exclude = cfg.setdefault('flatten', {}).setdefault('exclude_paths', [])
+        exclude.extend(p for p in manifest.get('technical_fields_always_differ', []) if p not in exclude)
+    pairs = discover(cfg['dataset'], cfg.get('pool'))
+    before_rows, after_rows, issues = [], [], []
+    skipped = []
+    for pair in pairs:
+        app_id = pair['APP_ID']
+        start = len(issues)
+        before = load(pair['file_before'], cfg, app_id=app_id, source='BEFORE', issues=issues)
+        after = load(pair['file_after'], cfg, app_id=app_id, source='AFTER', issues=issues)
+        if any(i['ISSUE'] == 'PARSE_ERROR' for i in issues[start:]):
+            skipped.append(app_id)
+            continue
+        b, a = flatten_pair(before or {}, after or {}, cfg, app_id=app_id, issues=issues)
+        before_rows.extend(bucketize(b, cfg))
+        after_rows.extend(bucketize(a, cfg))
+    united = union(before_rows, after_rows)
+    compared = compare(united, issues=issues)
+    quality = pd.DataFrame(issues, columns=QUALITY_COLUMNS).astype('string').drop_duplicates()
+    out = Path(run_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    # Не затираем артефакты другого/предыдущего запуска.
+    filenames = ['union.parquet', 'comparison.parquet', 'quality.parquet', 'comparison_status.json']
+    if any((out / name).exists() for name in filenames):
+        raise FileExistsError('Choose a fresh run directory')
+    united.to_parquet(out/'union.parquet', index=False)
+    compared.to_parquet(out/'comparison.parquet', index=False)
+    quality.to_parquet(out/'quality.parquet', index=False)
+    status = dict(stage='comparison', total_apps=len(pairs), union_rows=len(united),
+                  comparison_rows=len(compared), diff_rows=int(compared.DIFF_FLAG.sum()),
+                  quality_issues=len(quality), skipped_parse_app_ids=skipped,
+                  incomplete=bool(len(quality)))
+    (out/'comparison_status.json').write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
+    return status
