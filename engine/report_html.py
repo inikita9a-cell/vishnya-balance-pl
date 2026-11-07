@@ -48,7 +48,7 @@ def write_report_html(run_dir: str | Path, cfg: dict | None = None) -> Path:
     table_rows = []
     for item in checks:
         ids = item.get('APP_IDS') or []
-        links = ', '.join(f'<a href="{_esc(api + '/apps/' + quote(str(a), safe=""))}">{_esc(a)}</a>'
+        links = ', '.join(f'<a href="{_esc(api + "/apps/" + quote(str(a), safe=""))}">{_esc(a)}</a>'
                           for a in ids[:10])
         if len(ids) > 10:
             links += f' и ещё {len(ids) - 10}'
