@@ -184,28 +184,35 @@ def run_pipeline(run_id: str, cfg: dict):
         db.close()
 
 
-def rerun_checks(run_id: str):
+def rerun_checks(run_id: str, cfg: dict | None = None, run_dir=None, on_event=None):
     """Recompute checks, Verdict and HTML without touching comparison/aggregates."""
     db = SessionLocal()
     try:
         run = db.get(Run, run_id)
         if run is None or run.status != 'done':
             raise ValueError('Only a completed run may rerun checks')
-        cfg = yaml.safe_load(run.config_snapshot) or {}
-        root = RUNS_DIR / run_id
+        if cfg is None:
+            cfg = yaml.safe_load(run.config_snapshot) or {}
+        root = Path(run_dir) if run_dir is not None else RUNS_DIR / run_id
         journal = _StageJournal(db, run_id, run.started_by, cfg)
+
+        def emit(event):
+            journal(event)
+            if on_event:
+                on_event(event)
+
         try:
             cfg = freeze_checks(cfg)
-            journal({'step': 's12_checks', 'status': 'running', **checks_snapshot_event(cfg)})
+            emit({'step': 's12_checks', 'status': 'running', **checks_snapshot_event(cfg)})
             checks_path = Path(execute_checks({'cfg': cfg, 'run_dir': str(root)}))
             rows = json.loads(checks_path.read_text(encoding='utf-8'))
-            journal({'step': 's12_checks', 'status': 'done', 'rows_out': len(rows)})
-            journal({'step': 's13_summary', 'status': 'running'})
+            emit({'step': 's12_checks', 'status': 'done', 'rows_out': len(rows)})
+            emit({'step': 's13_summary', 'status': 'running'})
             summary = prepare_summary(root, cfg)
-            journal({'step': 's13_summary', 'status': 'done', 'rows_out': summary.get('total_apps')})
-            journal({'step': 's15_report', 'status': 'running'})
+            emit({'step': 's13_summary', 'status': 'done', 'rows_out': summary.get('total_apps')})
+            emit({'step': 's15_report', 'status': 'running'})
             output = write_report_html(root, cfg)
-            journal({'step': 's15_report', 'status': 'done', 'message': str(output)})
+            emit({'step': 's15_report', 'status': 'done', 'message': str(output)})
             return str(checks_path)
         except Exception as exc:
             journal.fail_active(exc)

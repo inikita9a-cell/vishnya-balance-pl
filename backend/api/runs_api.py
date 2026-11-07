@@ -6,6 +6,7 @@ from ..auth import current_user
 from ..db import SessionLocal
 from ..models import Run, StageLog, Config
 from ..runs import start_run, run_pipeline, rerun_checks
+from engine.check_jobs import queue_checks, execute_job, get_job, latest_job, mark_failed, CheckJobError
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -80,10 +81,42 @@ def get_step(rid: str, step: str, user: str = Depends(current_user)):
         db.close()
 
 
+class ChecksRerunIn(BaseModel):
+    config_id: int | None = None
+    checks: list[str | dict] | None = None
+    check_params: dict | None = None
+
+
 @router.post("/{rid}/checks/rerun")
-def rerun(rid: str, user: str = Depends(current_user)):
-    threading.Thread(target=rerun_checks, args=(rid,), daemon=True).start()
-    return {"ok": True}
+def rerun(rid: str, body: ChecksRerunIn | None = None, user: str = Depends(current_user)):
+    try:
+        job = queue_checks(rid, user, **(body.model_dump() if body else {}))
+    except CheckJobError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    except (ValueError, OSError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        threading.Thread(target=execute_job, args=(rid, job['job_id']), daemon=True).start()
+    except Exception as exc:
+        mark_failed(rid, job['job_id'], exc)
+        raise HTTPException(500, 'Could not start checks worker') from exc
+    return {"ok": True, **job}
+
+
+@router.get("/{rid}/checks/jobs/{job_id}")
+def check_job_status(rid: str, job_id: str, user: str = Depends(current_user)):
+    try:
+        return get_job(rid, job_id, user)
+    except CheckJobError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@router.get("/{rid}/checks/status")
+def latest_check_job(rid: str, user: str = Depends(current_user)):
+    try:
+        return {"job": latest_job(rid, user)}
+    except CheckJobError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @router.get("/{rid}/report.html")

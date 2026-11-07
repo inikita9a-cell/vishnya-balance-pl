@@ -75,3 +75,26 @@ def try_proc(pid: int, body: TryIn, user: str = Depends(current_user)):
         return {"ok": ok, "result": out}
     finally:
         db.close()
+
+
+class AttachCheckIn(BaseModel):
+    config_id: int
+    check_id: str
+    params: dict | None = None
+    label: str | None = None
+    entry: str = "check"
+
+
+@router.post("/{pid}/attach")
+def attach_proc(pid: int, body: AttachCheckIn, user: str = Depends(current_user)):
+    from engine.check_jobs import attach_check, CheckJobError
+    db = SessionLocal()
+    try:
+        result = attach_check(db, user, pid, **body.model_dump())
+        return {"ok": True, **result}
+    except CheckJobError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    except (ValueError, OSError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    finally:
+        db.close()
