@@ -14,30 +14,13 @@ DEFAULT_CHECKS = [
 
 
 def run_checks(state) -> str:
-    cfg = state["cfg"];
-    run_dir = pathlib.Path(state["run_dir"])
-    mart = Mart(str(run_dir))
-    results = []
-    for chk in cfg.get("checks") or DEFAULT_CHECKS:
-        if isinstance(chk, str):
-            chk = next((c for c in DEFAULT_CHECKS if c["id"] == chk), None)
-            if chk is None: continue
-        params = (cfg.get("check_params") or {}).get(chk["id"], {})
-        try:
-            from .sandbox import execute_user_code
-            code = _code_for(chk, cfg)
-            ok, out = execute_user_code(code, chk.get("entrypoint", "check"),
-                                        {"mart": mart, "params": params})
-            if not ok:
-                results.append({"LABEL": chk["label"], "RESULT": "ERROR", "DETAILS": out})
-            else:
-                results.append(out)
-        except Exception:
-            results.append({"LABEL": chk["label"], "RESULT": "ERROR",
-                            "DETAILS": traceback.format_exc()[-2000:]})
-    out = run_dir / "checks.json"
-    out.write_text(json.dumps(results, ensure_ascii=False, indent=2, default=str))
-    return str(out)
+    """Platform interface: run selected checks and return checks.json path.
+
+    The adapter executes the real CHECK scripts against prepared Parquet data.
+    Keep this signature because backend/runs.py imports run_checks(state).
+    """
+    from .platform_checks_adapter import run_checks as run_real_checks
+    return run_real_checks(state)
 
 
 def _code_for(chk, cfg):
