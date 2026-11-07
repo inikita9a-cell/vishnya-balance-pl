@@ -1,0 +1,8 @@
+{
+  "run_id": "notebook-public-samples",
+  "applications": 4,
+  "technical_fields_always_differ": [
+    "appData.request_id",
+    "appData.createDateTime"
+  ]
+}
