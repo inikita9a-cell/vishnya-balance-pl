@@ -1,9 +1,8 @@
-"""P0-07 tests: expansion of truncated check rows and owner isolation."""
+"""P0-07: full expansion, pagination, private/shared report access."""
 from __future__ import annotations
 
 import json
 import pathlib
-from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -16,30 +15,38 @@ def _make_run(tmp_path: pathlib.Path, rows: list[dict], apps: list[str]) -> tupl
     run_dir.mkdir(parents=True)
     (run_dir / "checks.json").write_text(json.dumps(rows), encoding="utf-8")
     # comparison.parquet with APP_ID and fake columns for FILTERS
-    df = pd.DataFrame({"APP_ID": apps, "PATH": ["p"] * len(apps), "CHANGE_TYPE": ["SAME"] * len(apps)})
+    df = pd.DataFrame({"APP_ID": apps, "PATH": ["p"] * len(apps),
+                       "ARRAY_KEY": [""] * len(apps), "KEY": ["p"] * len(apps),
+                       "DIFF_FLAG": [0] * len(apps), "CHANGE_TYPE": ["SAME"] * len(apps),
+                       "VALUE_BEFORE": ["v"] * len(apps), "VALUE_AFTER": ["v"] * len(apps)})
     df.to_parquet(run_dir / "comparison.parquet", index=False)
-    (run_dir / "segments.parquet").write_text("", encoding="utf-8")
+    pd.DataFrame({"APP_ID": apps}).to_parquet(run_dir / "segments.parquet", index=False)
     return run_dir, run_id
 
 
 def _client(monkeypatch, owned: bool = True):
     from backend.main import app
     from backend import auth
+    from backend.db import Base
+    from backend.models import Run
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
 
-    class FakeRun:
-        started_by = "alice"
-
-    def fake_owned(rid, user):
-        if not owned:
-            from fastapi import HTTPException
-            raise HTTPException(404, "run not found")
-        return FakeRun()
-
-    monkeypatch.setattr(auth, "get_run_owned", fake_owned)
-    # also patch the symbol imported inside check_apps_api
-    import backend.api.check_apps_api as mod
-    monkeypatch.setattr(mod, "get_run_owned", fake_owned)
-    return TestClient(app)
+    # Use real guards and an isolated DB instead of mocking a renamed guard.
+    engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    with factory() as db:
+        db.add(Run(id='run_test', started_by='alice' if owned else 'bob',
+                   status='done', config_snapshot='{}'))
+        db.commit()
+    monkeypatch.setattr(auth, 'SessionLocal', factory)
+    monkeypatch.setenv('APP_ENV', 'development')
+    monkeypatch.setenv('REPORT_ACCESS', 'private')
+    client = TestClient(app)
+    client.cookies.set(auth.COOKIE, 'alice')
+    return client
 
 
 def test_expand_full_rows_only(tmp_path, monkeypatch):
@@ -135,7 +142,7 @@ def test_pagination_truncated_flag(tmp_path, monkeypatch):
     assert set(r2.json()["items"]) == set(apps[20:])
 
 
-def test_foreign_run_returns_404(tmp_path, monkeypatch):
+def test_foreign_run_returns_404_in_private_mode(tmp_path, monkeypatch):
     rows = [{"CHECK_ID": "c1", "RESULT": "FAIL", "ARGUMENT": "A",
              "APP_IDS": ["x"], "CNT": 1, "FILTERS": None}]
     _make_run(tmp_path, rows, ["x"])
@@ -143,3 +150,23 @@ def test_foreign_run_returns_404(tmp_path, monkeypatch):
     client = _client(monkeypatch, owned=False)
     r = client.post("/api/runs/run_test/checks/c1/apps", json={})
     assert r.status_code == 404
+
+
+def test_shared_mode_can_read_foreign_check_apps(tmp_path, monkeypatch):
+    rows = [{"CHECK_ID":"c1", "CNT":1, "APP_IDS":["x"]}]
+    _make_run(tmp_path, rows, ['x'])
+    monkeypatch.chdir(tmp_path)
+    client = _client(monkeypatch, owned=False)
+    monkeypatch.setenv('REPORT_ACCESS', 'shared')
+    response = client.post('/api/runs/run_test/checks/c1/apps', json={})
+    assert response.status_code == 200, response.text
+    assert response.json()['items'] == ['x']
+
+
+def test_shared_mode_still_requires_login(tmp_path, monkeypatch):
+    _make_run(tmp_path, [{"CHECK_ID":"c1", "CNT":1, "APP_IDS":["x"]}], ['x'])
+    monkeypatch.chdir(tmp_path)
+    client = _client(monkeypatch)
+    monkeypatch.setenv('REPORT_ACCESS', 'shared')
+    client.cookies.clear()
+    assert client.post('/api/runs/run_test/checks/c1/apps', json={}).status_code == 401
