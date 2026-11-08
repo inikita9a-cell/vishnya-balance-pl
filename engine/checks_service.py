@@ -17,6 +17,7 @@ from uuid import uuid4
 import pandas as pd
 
 from .mart_api import MartAPI
+from .check_row_ids import assign_check_row_ids
 
 DEFAULT_CHECKS_DIR = Path(__file__).resolve().parents[1] / 'procedures' / 'checks'
 _CHECK_ID = re.compile(r'^[A-Za-z][A-Za-z0-9_-]*$')
@@ -84,19 +85,22 @@ def _normalize_row(row: dict, check_id: str, label: str, elapsed: float) -> dict
         raise ValueError('CHECK.CNT cannot exceed TOTAL')
     if not isinstance(values['APP_IDS'], list) or not all(isinstance(x, str) for x in values['APP_IDS']):
         raise ValueError('CHECK.APP_IDS must be a list of strings')
+    if len(set(values['APP_IDS'])) != len(values['APP_IDS']):
+        raise ValueError('CHECK.APP_IDS contains duplicate IDs; each application must appear once')
+    if len(values['APP_IDS']) > values['CNT']:
+        raise ValueError('CHECK.APP_IDS has more distinct IDs than CNT')
     if not isinstance(values['LABEL'], str):
         raise ValueError('CHECK.LABEL must be a string')
     values['CHECK_ID'] = check_id
     values['DURATION_MS'] = round(elapsed * 1000, 3)
 
-    # Optional: filters that reproduce this row's CNT from MartAPI.
-    # Convention: FILTERS maps mart keyword arguments -> value(s).
-    # For app_ids specifically, use the key "app_ids" (MartAPI signature).
+    # CHECK.FILTERS is optional; for truncated rows it must reproduce the
+    # exact row's application IDs when used for drill-down.
     filters = values.get('FILTERS')
     if filters is not None:
         if not isinstance(filters, dict):
             raise ValueError('CHECK.FILTERS must be a dict or omitted')
-        # Backward compatibility: a check might have used APP_ID.
+        filters = dict(filters)
         if 'APP_ID' in filters and 'app_ids' not in filters:
             filters['app_ids'] = filters.pop('APP_ID')
     values['FILTERS'] = filters
@@ -105,9 +109,8 @@ def _normalize_row(row: dict, check_id: str, label: str, elapsed: float) -> dict
 
 def _error_row(check_id: str, label: str, exc: Exception, elapsed: float) -> dict:
     return dict(CHECK_ID=check_id, LABEL=label, SOURCE='AFTER', ARGUMENT='',
-                CNT=0, TOTAL=0, METRIC=None, APP_IDS=[], FILTERS=None,
-                RESULT='ERROR', CONFIDENCE='LOW',
-                DURATION_MS=round(elapsed * 1000, 3),
+                CNT=0, TOTAL=0, METRIC=None, APP_IDS=[], FILTERS=None, RESULT='ERROR',
+                CONFIDENCE='LOW', DURATION_MS=round(elapsed * 1000, 3),
                 ERROR=f'{type(exc).__name__}: {exc}',
                 TRACEBACK=traceback.format_exc(limit=12))
 
@@ -146,7 +149,7 @@ def run_checks(mart: MartAPI, check_ids: list[str], *, checks_dir=DEFAULT_CHECKS
             if on_event:
                 on_event(dict(check_id=check_id, status='error', message=str(exc),
                               duration_ms=round(elapsed * 1000, 3)))
-    return result
+    return assign_check_row_ids(result)
 
 
 def _atomic_json(path: Path, obj) -> None:

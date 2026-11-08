@@ -3,15 +3,7 @@
  * Backend's drilldown returns only a subset of segment columns.
  */
 import { api, post } from './client';
-import type { ExplorerFieldsResponse, ExplorerQueryRequest, ExplorerQueryResponse, ExplorerAppsRequest, ExplorerAppsResponse } from './explorer.types';
-
-export const getExplorerFields = (id: string) =>
-  api<ExplorerFieldsResponse>(`/runs/${encodeURIComponent(id)}/explorer/fields`);
-export const queryExplorer = (id: string, body: ExplorerQueryRequest) =>
-  post<ExplorerQueryResponse>(`/runs/${encodeURIComponent(id)}/explorer/query`, body);
-export const getExplorerApps = (id: string, body: ExplorerAppsRequest) =>
-  post<ExplorerAppsResponse>(`/runs/${encodeURIComponent(id)}/explorer/apps`, body);
-import type { Block, Check, Config, Difference, Pool, Procedure, RawComparison, Run, RunStage, Segment, StepDetail, Summary } from './types';
+import type { Block, Check, CheckAppsPage, Config, Difference, Pool, Procedure, RawComparison, Run, RunStage, Segment, StepDetail, Summary } from './types';
 
 const n = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : 0;
 const s = (value: unknown): string => value == null ? '' : String(value);
@@ -71,13 +63,6 @@ export async function getRun(id: string): Promise<Run> {
 export async function getConfigs(): Promise<Config[]> {
   return (await api<ServerConfig[]>('/configs')).map(c => ({ id: String(c.id), name: c.name, yaml: c.yaml }));
 }
-export async function createTemplateConfig(): Promise<{ id: number }> {
-  const template = await api<{ yaml: string }>('/configs/template');
-  // The path is edited after creation; actual execution still validates the dataset.
-  return post<{ id: number }>('/configs', {
-    name: 'Стандартный анализ', yaml: template.yaml, check_dataset: false,
-  });
-}
 export async function getPools(): Promise<Pool[]> {
   return (await api<ServerPool[]>('/pools')).map(p => ({
     id: String(p.id), name: p.name, payload: p.payload,
@@ -129,14 +114,22 @@ export async function getBlocks(id: string): Promise<Block[]> {
     .map(block => ({ ...block }));
 }
 interface ServerCheck {
-  CHECK_ID?: string; LABEL: string; RESULT: string;
-  CNT: number; TOTAL: number; METRIC: number | null;
+  CHECK_ID?: string; ROW_ID: string; LABEL: string; RESULT: string;
+  CNT: number; TOTAL: number; METRIC: number | string | null;
   APP_IDS?: string[]; CONFIDENCE: string; SOURCE: string; ARGUMENT: string;
 }
 export async function getChecks(id: string): Promise<Check[]> {
   return (await api<ServerCheck[]>(`/runs/${encodeURIComponent(id)}/checks`)).map((c, i) => ({
-    ...c, id: `${c.CHECK_ID || c.LABEL}-${i}`, APP_IDS: c.APP_IDS || [],
+    ...c, CHECK_ID: c.CHECK_ID || c.LABEL, ROW_ID: c.ROW_ID,
+    id: c.ROW_ID || `${c.CHECK_ID || c.LABEL}-${i}`, APP_IDS: c.APP_IDS || [],
   }));
+}
+/** Returns an EXACT check-row application page (never merges matching arguments). */
+export async function getCheckRowApps(runId: string, checkId: string, rowId: string,
+    limit = 100, offset = 0): Promise<CheckAppsPage> {
+  return post<CheckAppsPage>(`/runs/${encodeURIComponent(runId)}/checks/${encodeURIComponent(checkId)}/apps`, {
+    row_id: rowId, limit, offset
+  });
 }
 export async function rerunChecks(id: string): Promise<void> {
   // Server returns {ok:true} immediately; results are updated in a background thread.

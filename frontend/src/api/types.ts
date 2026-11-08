@@ -1,6 +1,6 @@
 /** UI view models, normalized from the actual Python backend responses in real.ts. */
 export type Page<T> = { items: T[]; total: number; offset: number; limit: number };
-export type User = { name: string; id?: string; auth_mode?: "basic" };
+export type User = { name: string; id?: string };
 export type RunStage = {
   step: string;
   status: string;
@@ -67,8 +67,9 @@ export type Block = {
 };
 export type Check = {
   id: string;
+  CHECK_ID: string; ROW_ID: string;
   LABEL: string; RESULT: string;
-  CNT: number; TOTAL: number; METRIC: number | null;
+  CNT: number; TOTAL: number; METRIC: number | string | null;
   APP_IDS: string[]; CONFIDENCE: string; SOURCE: string; ARGUMENT: string;
 };
 export type StepDetail = {
@@ -77,3 +78,9 @@ export type StepDetail = {
   log: Record<string, unknown> & { status: string };
 };
 export type RawComparison = { before: string; after: string };
+
+export type CheckAppsPage = {
+  check_id: string; row_id: string; total: number; declared_cnt: number;
+  truncated: boolean; has_more: boolean; items: string[]; limit: number;
+  offset: number; source: 'APP_IDS' | 'FILTERS';
+};
