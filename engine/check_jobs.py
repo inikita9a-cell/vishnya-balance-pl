@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+import time
 from uuid import uuid4
 
 import yaml
@@ -57,12 +58,24 @@ def _owned_run(db, run_id, user, *, read_only=False):
     return run
 
 
+def _replace_with_retry(source, target):
+    """Keep atomic replacement when Windows briefly locks a polled file."""
+    for attempt in range(12):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if getattr(exc, 'winerror', None) not in (5, 32, 33) or attempt == 11:
+                raise
+            time.sleep(min(0.01 * 2 ** attempt, 0.2))
+
+
 def _write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f'.{path.name}.{uuid4().hex}.tmp')
     try:
         temp.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
-        os.replace(temp, path)
+        _replace_with_retry(temp, path)
     finally:
         temp.unlink(missing_ok=True)
 
@@ -181,7 +194,7 @@ def _publish(staged, root):
             if not (staged / name).is_file():
                 raise FileNotFoundError(f'Checks job did not produce {name}')
         for name in PUBLISHED:
-            os.replace(staged / name, root / name)
+            _replace_with_retry(staged / name, root / name)
             changed.append(name)
     except Exception:
         for name in reversed(changed):
