@@ -1,0 +1,31 @@
+{
+  "mode": "ASGI TestClient; browser NOT_TESTED",
+  "source_sha": "36d1f08 + local fixes",
+  "checks": [
+    "health",
+    "login",
+    "cookie session",
+    "load full template",
+    "create template with unavailable default dataset",
+    "save real demo dataset config",
+    "start background pipeline",
+    "pipeline done",
+    "summary",
+    "blocks",
+    "registry drilldown",
+    "application explanation",
+    "raw before/after from external dataset",
+    "check report",
+    "explorer fields",
+    "explorer query",
+    "explorer apps",
+    "explorer count agrees with drilldown",
+    "HTML report with frontend deep links",
+    "other owner denied"
+  ],
+  "summary": {
+    "total_apps": 4,
+    "apps_with_diff": 3,
+    "apps_decision_changed": 2
+  }
+}

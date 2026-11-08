@@ -1,0 +1,99 @@
+{
+  "status": "PASS",
+  "files": {
+    "union": {
+      "equal": true,
+      "rows_before": 572221,
+      "rows_after": 572221,
+      "rows_removed": 0,
+      "rows_added": 0
+    },
+    "comparison": {
+      "equal": true,
+      "rows_before": 289533,
+      "rows_after": 289533,
+      "rows_removed": 0,
+      "rows_added": 0
+    },
+    "quality": {
+      "equal": true,
+      "rows_before": 0,
+      "rows_after": 0,
+      "rows_removed": 0,
+      "rows_added": 0
+    },
+    "segments": {
+      "equal": true,
+      "rows_before": 2002,
+      "rows_after": 2002,
+      "rows_removed": 0,
+      "rows_added": 0
+    },
+    "blocks": {
+      "equal": true,
+      "rows_before": 18,
+      "rows_after": 18,
+      "rows_removed": 0,
+      "rows_added": 0
+    },
+    "facts": {
+      "equal": true,
+      "rows_before": 44695,
+      "rows_after": 44695,
+      "rows_removed": 0,
+      "rows_added": 0
+    },
+    "fact_apps": {
+      "equal": true,
+      "rows_before": 300017,
+      "rows_after": 300017,
+      "rows_removed": 0,
+      "rows_added": 0
+    },
+    "checks.json": {
+      "equal": true,
+      "rows_before": 32,
+      "rows_after": 32
+    },
+    "procedures_snapshot.json": {
+      "equal": true
+    },
+    "summary.json": {
+      "equal": true
+    }
+  },
+  "metadata": {
+    "config_equal": true,
+    "executed_stages_equal": true,
+    "both_done": true,
+    "stage_count_before": 12,
+    "stage_count_after": 12
+  },
+  "summary_counts": {
+    "total_apps": {
+      "before": 2002,
+      "after": 2002
+    },
+    "apps_with_diff": {
+      "before": 502,
+      "after": 502
+    },
+    "apps_decision_changed": {
+      "before": 385,
+      "after": 385
+    },
+    "apps_comparison_incomplete": {
+      "before": 0,
+      "after": 0
+    },
+    "comparison_rows": {
+      "before": 289533,
+      "after": 289533
+    },
+    "diff_rows": {
+      "before": 14412,
+      "after": 14412
+    }
+  },
+  "artifacts_equal": true
+}
