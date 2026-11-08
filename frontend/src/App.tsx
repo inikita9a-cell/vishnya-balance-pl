@@ -134,7 +134,7 @@ function App() {
       {location.section === 'pivot' && <Pivot runId={location.runId} onOpenApp={id => navigate('registry', location.runId, '', {APP_ID: id})} />}
       {location.section === 'report' && <Report runId={location.runId} onRegistry={filters => navigate('registry', location.runId, '', filters)} />}
       {location.section === 'registry' && <Registry runId={location.runId} filters={location.filters} onRun={() => navigate('detail')} onRunChange={id => navigate('registry', id)} onClearFilters={() => navigate('registry', location.runId)} />}
-      {location.section === 'checks' && <Checks runId={location.runId} />}
+      {location.section === 'checks' && <Checks key={location.runId} runId={location.runId} onApplication={appId => navigate('registry', location.runId, '', { APP_ID: appId })} />}
       {location.section === 'config' && <Config onStart={id => void start(id)} />}
     </main>
   </Container>;

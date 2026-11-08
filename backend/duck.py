@@ -236,7 +236,8 @@ def drilldown(run_dir: pathlib.Path, filters: dict) -> list[dict]:
             LEFT JOIN segments AS s ON s.APP_ID = selected.APP_ID
             ORDER BY selected.APP_ID
         """
-        return con.execute(sql, params).df().to_dict(orient="records")
+        df = con.execute(sql, params).df()
+        return df.astype(object).where(df.notna(), None).to_dict(orient="records")
     finally:
         con.close()
 
@@ -252,7 +253,9 @@ def app_rows(run_dir: pathlib.Path, app_id: str, diff_only: bool) -> list[dict]:
             f"SELECT * FROM comparison WHERE APP_ID = ? {cond} ORDER BY PATH, ARRAY_KEY",
             [app_id],
         ).df()
-        return df.to_dict(orient="records")
+        # Nullable numeric metadata becomes NaN in pandas. JSON cannot encode it;
+        # preserve the SQL NULL instead of failing the entire application card.
+        return df.astype(object).where(df.notna(), None).to_dict(orient="records")
     finally:
         con.close()
 

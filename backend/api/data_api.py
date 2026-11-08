@@ -148,7 +148,11 @@ def explorer_apps(rid: str, body: ExplorerAppsIn, user: str = Depends(current_us
 def app_rows(rid: str, app_id: str, diff_only: int = Query(0),
              user: str = Depends(current_user)):
     get_run_readable(rid, user)
-    return duck.app_rows(_dir(rid), app_id, bool(diff_only))
+    from duckdb import Error as DuckDBError
+    try:
+        return duck.app_rows(_dir(rid), app_id, bool(diff_only))
+    except (FileNotFoundError, ValueError, DuckDBError) as e:
+        raise HTTPException(409, f'Не удалось загрузить атрибуты заявки: {e}') from e
 
 
 @router.get("/{rid}/apps/{app_id}/raw")
