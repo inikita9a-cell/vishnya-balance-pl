@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
+if [ "${APP_ENV:-development}" = "development" ]; then
+  export REPORT_ACCESS="${REPORT_ACCESS:-shared}"
+fi
+
 # 1. Бэкенд
 python3 -m venv .venv
 source .venv/bin/activate

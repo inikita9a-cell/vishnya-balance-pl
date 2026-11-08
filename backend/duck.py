@@ -497,6 +497,9 @@ def explorer_query(
         for _, row in df.iterrows():
             values = {}
             drilldown = dict(filters or {})
+            if not include_unchanged:
+                # Preserve the implicit differences-only scope when replaying a group.
+                drilldown['DIFF_FLAG'] = [1]
             for d in dims:
                 v = row[d]
                 if pd.isna(v):

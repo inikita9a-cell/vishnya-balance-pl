@@ -1,7 +1,8 @@
 # backend/api/auth.py
 from fastapi import APIRouter, Request, Response, Depends, HTTPException
 from pydantic import BaseModel
-from ..auth import current_user, COOKIE
+from urllib.parse import quote
+from ..auth import current_user, COOKIE, UNICODE_COOKIE
 from ..db import get_db, SessionLocal
 from ..models import User
 
@@ -27,7 +28,12 @@ def login(body: LoginIn, response: Response, request: Request):
             db.commit()
     finally:
         db.close()
-    response.set_cookie(COOKIE, name, httponly=True, samesite="lax")
+    if name.isascii():
+        response.delete_cookie(UNICODE_COOKIE)
+        response.set_cookie(COOKIE, name, httponly=True, samesite="lax")
+    else:
+        response.delete_cookie(COOKIE)
+        response.set_cookie(UNICODE_COOKIE, quote(name, safe=''), httponly=True, samesite="lax")
     return {"name": name}
 
 
@@ -40,4 +46,5 @@ def me(user: str = Depends(current_user)):
 @router.post("/logout")
 def logout(response: Response):
     response.delete_cookie(COOKIE)
+    response.delete_cookie(UNICODE_COOKIE)
     return {"ok": True}

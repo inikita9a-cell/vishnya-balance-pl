@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from pydantic import BaseModel, Field
 from ..db import SessionLocal
 from ..models import Run
-from ..auth import current_user, get_run_owned, contained, identifier, run_directory
+from ..auth import current_user, get_run_readable, contained, identifier, run_directory, staging
 from .. import duck
 
 router = APIRouter(prefix="/api/runs", tags=["data"])
@@ -39,7 +39,7 @@ class ExplorerAppsIn(BaseModel):
 
 @router.post("/{rid}/pivot")
 def pivot(rid: str, body: PivotIn, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     if not _dir(rid).exists():
         raise HTTPException(404)
     return duck.pivot(_dir(rid), body.rows, body.cols, body.filters)
@@ -47,19 +47,19 @@ def pivot(rid: str, body: PivotIn, user: str = Depends(current_user)):
 
 @router.post("/{rid}/drilldown")
 def drilldown(rid: str, body: PivotIn, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     return duck.drilldown(_dir(rid), body.filters)
 
 
 @router.post("/{rid}/sankey")
 def sankey(rid: str, body: PivotIn, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     return duck.get_sankey_data(_dir(rid), body.filters)
 
 
 @router.get("/{rid}/explorer/fields")
 def explorer_fields(rid: str, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     try:
         return duck.get_explorer_fields(_dir(rid))
     except FileNotFoundError as e:
@@ -70,7 +70,7 @@ def explorer_fields(rid: str, user: str = Depends(current_user)):
 
 @router.post("/{rid}/explorer/query")
 def explorer_query(rid: str, body: ExplorerQueryIn, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     try:
         return duck.explorer_query(
             _dir(rid), group_by=body.groupBy, filters=body.filters,
@@ -85,7 +85,7 @@ def explorer_query(rid: str, body: ExplorerQueryIn, user: str = Depends(current_
 
 @router.post("/{rid}/explorer/apps")
 def explorer_apps(rid: str, body: ExplorerAppsIn, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     try:
         return duck.explorer_apps(_dir(rid), filters=body.filters,
                                   limit=body.limit, offset=body.offset)
@@ -100,13 +100,13 @@ def explorer_apps(rid: str, body: ExplorerAppsIn, user: str = Depends(current_us
 @router.get("/{rid}/apps/{app_id}")
 def app_rows(rid: str, app_id: str, diff_only: int = Query(0),
              user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     return duck.app_rows(_dir(rid), app_id, bool(diff_only))
 
 
 @router.get("/{rid}/apps/{app_id}/raw")
 def app_raw(rid: str, app_id: str, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     if not app_id or app_id in ('.', '..') or '/' in app_id or '\\' in app_id:
         raise HTTPException(400, 'invalid app id')
     d = _dir(rid)
@@ -125,10 +125,14 @@ def app_raw(rid: str, app_id: str, user: str = Depends(current_user)):
                 raise HTTPException(404)
             cfg = yaml.safe_load(run.config_snapshot) or {}
             dataset = cfg.get('dataset') or {}
-            base = contained('data', pathlib.Path(dataset['path']))
+            # Local configs may reference an external dataset (e.g. a Windows drive).
+            # Staging still restricts all datasets to the server's data directory.
+            base = pathlib.Path(dataset['path']).resolve()
+            if staging():
+                base = contained('data', base)
             for tag, key in [('BEFORE_MASTER', 'before_dir'), ('AFTER_BETA', 'after_dir')]:
                 for ext in ('json', 'xml'):
-                    candidate = contained('data', base / dataset[key] / f'{app_id}.{ext}')
+                    candidate = contained(base, base / dataset[key] / f'{app_id}.{ext}')
                     if candidate.is_file():
                         out[tag] = candidate.read_text(encoding='utf-8-sig')
                         break
@@ -145,7 +149,7 @@ def app_raw(rid: str, app_id: str, user: str = Depends(current_user)):
 
 @router.get("/{rid}/summary")
 def summary(rid: str, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     p = _dir(rid) / "summary.json"
     if not p.exists():
         raise HTTPException(404)
@@ -154,7 +158,7 @@ def summary(rid: str, user: str = Depends(current_user)):
 
 @router.get("/{rid}/blocks")
 def blocks(rid: str, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     p = _dir(rid) / "blocks.parquet"
     if not p.exists():
         raise HTTPException(404)
@@ -164,7 +168,7 @@ def blocks(rid: str, user: str = Depends(current_user)):
 
 @router.get("/{rid}/quality")
 def quality(rid: str, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     p = _dir(rid) / "quality.parquet"
     if not p.exists():
         raise HTTPException(404)

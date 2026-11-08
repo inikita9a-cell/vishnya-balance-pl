@@ -1,6 +1,7 @@
 import os
 import re
 from pathlib import Path
+from urllib.parse import unquote
 """Cookie-based session for the hackathon MVP.
 
 WARNING: The cookie is set from a user-supplied name and is NOT a secure
@@ -14,9 +15,22 @@ from .db import SessionLocal
 from .models import Run, Config, Procedure
 
 COOKIE = "spr_user"
+UNICODE_COOKIE = "spr_user_utf8"
 
 def staging():
     return os.getenv("APP_ENV", "development") != "development"
+
+def reports_shared():
+    """Explicit team report visibility; configuration ownership is unaffected."""
+    return os.getenv('REPORT_ACCESS', 'private') == 'shared'
+
+def report_read_request(request):
+    if request.method in ('GET', 'HEAD'):
+        return True
+    # These POST operations query existing artifacts and do not change a run.
+    return request.method == 'POST' and re.fullmatch(
+        r'/api/runs/[A-Za-z0-9_-]+/(?:pivot|drilldown|sankey|explorer/(?:query|apps)|checks/[^/]+/apps)',
+        request.url.path) is not None
 
 def contained(root, path):
     root, path = Path(root).resolve(), Path(path).resolve()
@@ -47,12 +61,37 @@ def owned_run(rid, user):
     run_directory(rid)
 
 def current_user(request: Request) -> str:
-    name = getattr(request.state, "verified_user", None) if staging() else request.cookies.get(COOKIE)
+    if staging():
+        name = getattr(request.state, "verified_user", None)
+    else:
+        # Retain existing ASCII sessions; Unicode names use an ASCII-safe cookie.
+        name = request.cookies.get(COOKIE)
+        if not name and request.cookies.get(UNICODE_COOKIE):
+            try:
+                name = unquote(request.cookies[UNICODE_COOKIE], encoding='utf-8', errors='strict')
+            except UnicodeError:
+                raise HTTPException(401, "login required")
     if not name:
         raise HTTPException(401, "login required")
     if "rid" in request.path_params:
-        owned_run(request.path_params["rid"], name)
+        if reports_shared() and report_read_request(request):
+            get_run_readable(request.path_params['rid'], name)
+            run_directory(request.path_params['rid'])
+        else:
+            owned_run(request.path_params["rid"], name)
     return name
+
+
+def get_run_readable(run_id: str, user: str) -> Run:
+    """Authenticated report access under the selected team/private policy."""
+    db = SessionLocal()
+    try:
+        run = db.get(Run, run_id)
+        if not user or not run or (run.started_by != user and not reports_shared()):
+            raise HTTPException(404, 'run not found')
+        return run
+    finally:
+        db.close()
 
 
 def get_run_owned(run_id: str, user: str) -> Run:

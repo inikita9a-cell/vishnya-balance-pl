@@ -156,6 +156,31 @@ def test_lists_only_contain_current_user_and_own_run_still_opens(system):
     assert client.get('/api/runs/alice_run/summary').json() == {'total_apps': 1}
 
 
+def test_local_raw_reads_owned_run_external_dataset(system):
+    response = system['client'].get('/api/runs/alice_run/apps/sample/raw')
+    assert response.status_code == 200, response.text
+    assert set(response.json()) == {'BEFORE_MASTER', 'AFTER_BETA'}
+    assert system['client'].get('/api/runs/bob_run/apps/sample/raw').status_code == 404
+
+
+def test_raw_dataset_side_cannot_escape_dataset_root(system):
+    cfg = deepcopy(system['cfg'])
+    cfg['dataset']['before_dir'] = '../outside'
+    with system['db']() as db:
+        db.get(Run, 'alice_run').config_snapshot = yaml.safe_dump(cfg)
+        db.commit()
+    response = system['client'].get('/api/runs/alice_run/apps/sample/raw')
+    assert response.status_code == 400
+
+
+def test_staging_raw_rejects_external_dataset(system, monkeypatch):
+    from fastapi import HTTPException
+    monkeypatch.setenv('APP_ENV', 'staging')
+    with pytest.raises(HTTPException) as error:
+        data_api.app_raw('alice_run', 'sample', user='alice')
+    assert error.value.status_code == 400
+
+
 def test_cached_raw_utf8_and_path_validation_before_read(system, monkeypatch):
     folder = system['root'] / 'runs/alice_run/raw/BEFORE_MASTER'
     folder.mkdir(parents=True)

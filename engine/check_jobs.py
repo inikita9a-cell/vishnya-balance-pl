@@ -47,11 +47,12 @@ def _root(run_id):
     return Path(_platform().RUNS_DIR) / run_id
 
 
-def _owned_run(db, run_id, user):
+def _owned_run(db, run_id, user, *, read_only=False):
     from backend.models import Run
     _root(run_id)
     run = db.get(Run, run_id)
-    if run is None or run.started_by != user:
+    from backend.auth import reports_shared
+    if run is None or not user or (run.started_by != user and not (read_only and reports_shared())):
         raise CheckJobError('Run not found for current user', 404)
     return run
 
@@ -142,7 +143,7 @@ def queue_checks(run_id, user, *, config_id=None, checks=None, check_params=None
 
 def get_job(run_id, job_id, user):
     with _platform().SessionLocal() as db:
-        _owned_run(db, run_id, user)
+        _owned_run(db, run_id, user, read_only=True)
     path = _path(_root(run_id), job_id)
     if not path.is_file():
         raise CheckJobError('Check job not found', 404)
@@ -151,7 +152,7 @@ def get_job(run_id, job_id, user):
 
 def latest_job(run_id, user):
     with _platform().SessionLocal() as db:
-        _owned_run(db, run_id, user)
+        _owned_run(db, run_id, user, read_only=True)
     paths = list((_root(run_id) / 'checks_jobs').glob('*.json'))
     if not paths:
         return None

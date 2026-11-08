@@ -2,7 +2,7 @@
 import json, threading, yaml, pathlib
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from ..auth import current_user, get_run_owned, get_config_owned
+from ..auth import current_user, get_run_owned, get_run_readable, get_config_owned, reports_shared
 from ..validation import validate_config
 from ..auth import run_directory
 from ..db import SessionLocal
@@ -56,20 +56,24 @@ def _bg(rid, cfg):
 def list_runs(user: str = Depends(current_user)):
     db = SessionLocal()
     try:
+        query = db.query(Run)
+        if not reports_shared():
+            query = query.filter(Run.started_by == user)
         return [{"id": r.id, "status": r.status, "started_by": r.started_by,
                  "created_at": r.created_at, "finished_at": r.finished_at,
                  "config_id": r.config_id}
-                for r in db.query(Run).filter(Run.started_by == user).order_by(Run.created_at.desc()).all()]
+                for r in query.order_by(Run.created_at.desc()).all()]
     finally:
         db.close()
 
 
 @router.get("/{rid}")
 def get_run(rid: str, user: str = Depends(current_user)):
+    get_run_readable(rid, user)
     db = SessionLocal()
     try:
         r = db.get(Run, rid)
-        if not r or r.started_by != user: raise HTTPException(404)
+        if not r: raise HTTPException(404)
         logs = db.query(StageLog).filter(StageLog.run_id == rid).order_by(StageLog.id).all()
         return {"id": r.id, "status": r.status, "error": r.error,
                 "started_by": r.started_by, "created_at": r.created_at,
@@ -84,7 +88,7 @@ def get_run(rid: str, user: str = Depends(current_user)):
 
 @router.get("/{rid}/steps/{step}")
 def get_step(rid: str, step: str, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     db = SessionLocal()
     try:
         l = db.query(StageLog).filter_by(run_id=rid, step=step).order_by(StageLog.id.desc()).first()
@@ -137,7 +141,7 @@ def latest_check_job(rid: str, user: str = Depends(current_user)):
 
 @router.get("/{rid}/report.html")
 def report(rid: str, user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     p = pathlib.Path("runs") / rid / "report.html"
     if not p.exists(): raise HTTPException(404)
     from fastapi.responses import FileResponse

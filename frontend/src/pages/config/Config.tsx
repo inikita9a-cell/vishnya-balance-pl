@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import styled from 'styled-components';
 import { message, post, put } from '../../api/client';
-import { getConfigs, getPools, getProcedures } from '../../api/real';
+import { getConfigs, getPools, getProcedures, createTemplateConfig } from '../../api/real';
 import type { Config as ConfigType, Pool, Procedure } from '../../api/types';
 import { PageHeading, Panel, Line, PrimaryButton, QuietButton, Field, ErrorBox, Muted, NoticeSpacing } from '../../components/Ui';
 import { InfoNotice } from '../../components/InfoNotice/InfoNotice';
@@ -57,8 +57,7 @@ export function Config({ onStart }: Props) {
   async function createDefault() {
     setBusy(true); setError(''); setNotice('');
     try {
-      // If yaml is omitted, FastAPI loads configs/default_spr.yaml as the template.
-      const created = await post<{ id: number }>('/configs', { name: 'Стандартный анализ' });
+      const created = await createTemplateConfig();
       await refresh(); setCurrent(String(created.id));
       setNotice('Создан пресет из серверного шаблона. Проверьте dataset.path перед запуском.');
     } catch (e) { setError(message(e)); }

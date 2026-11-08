@@ -71,6 +71,13 @@ export async function getRun(id: string): Promise<Run> {
 export async function getConfigs(): Promise<Config[]> {
   return (await api<ServerConfig[]>('/configs')).map(c => ({ id: String(c.id), name: c.name, yaml: c.yaml }));
 }
+export async function createTemplateConfig(): Promise<{ id: number }> {
+  const template = await api<{ yaml: string }>('/configs/template');
+  // The path is edited after creation; actual execution still validates the dataset.
+  return post<{ id: number }>('/configs', {
+    name: 'Стандартный анализ', yaml: template.yaml, check_dataset: false,
+  });
+}
 export async function getPools(): Promise<Pool[]> {
   return (await api<ServerPool[]>('/pools')).map(p => ({
     id: String(p.id), name: p.name, payload: p.payload,

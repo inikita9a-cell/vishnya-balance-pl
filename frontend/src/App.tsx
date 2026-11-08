@@ -49,11 +49,12 @@ function App() {
     api<User>('/me').then(setUser).catch(() => setUser(null)).finally(() => setChecking(false));
   }, []);
   useEffect(() => {
-    const handler = () => setLocation(currentLocation());
+    const handler = () => { setError(''); setLocation(currentLocation()); };
     window.addEventListener('popstate', handler);
     return () => window.removeEventListener('popstate', handler);
   }, []);
   function navigate(section: Location['section'], runId = location.runId, step = '', filters: Record<string, unknown> = {}) {
+    setError('');
     const next = {
       section,
       runId,
@@ -79,7 +80,9 @@ function App() {
           return;
         }
       } catch (e) {
+        navigate('runs');
         setError(e instanceof Error ? e.message : 'Не удалось загрузить запуски');
+        return;
       }
       navigate('runs');
       return;
@@ -87,6 +90,7 @@ function App() {
     navigate(section);
   }
   async function start(configId: string) {
+    setError('');
     try {
       const response = await post<{
         run_id: string;

@@ -204,7 +204,7 @@ def test_summary_route_returns_json_not_string(monkeypatch, tmp_path):
     from backend.api import data_api
     (tmp_path / 'summary.json').write_text('{"total_apps": 2}', encoding='utf-8')
     monkeypatch.setattr(data_api, '_dir', lambda rid: tmp_path)
-    monkeypatch.setattr(data_api, 'get_run_owned', lambda rid, user: None)  # This unit checks JSON serialization only.
+    monkeypatch.setattr(data_api, 'get_run_readable', lambda rid, user: None)  # This unit checks JSON serialization only.
     result = data_api.summary('unit-run', user='demo')
     assert result == {'total_apps': 2}
 

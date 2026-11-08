@@ -7,6 +7,11 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 
+# Local team demo: authenticated users share report history, never config edits.
+if ((-not $env:APP_ENV -or $env:APP_ENV -eq 'development') -and -not $env:REPORT_ACCESS) {
+    $env:REPORT_ACCESS = 'shared'
+}
+
 $Python = Join-Path $Root '.venv\Scripts\python.exe'
 if (-not (Test-Path $Python)) {
     py -m venv .venv

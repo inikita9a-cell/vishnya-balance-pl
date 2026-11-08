@@ -6,7 +6,7 @@ import pathlib
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..auth import current_user, get_run_owned
+from ..auth import current_user, get_run_readable
 
 
 router = APIRouter(prefix="/api/runs", tags=["checks"])
@@ -72,7 +72,7 @@ def _expand_row(mart, row: dict) -> set[str]:
 @router.post("/{rid}/checks/{check_id}/apps")
 def check_apps(rid: str, check_id: str, body: CheckAppsIn,
                user: str = Depends(current_user)):
-    get_run_owned(rid, user)
+    get_run_readable(rid, user)
     run_dir = pathlib.Path("runs") / rid
     rows = _load_checks(run_dir)
 

@@ -7,6 +7,7 @@ const ts = require('typescript');
 
 const calls = [];
 const responses = {
+  '/configs/template': {yaml:'dataset:\n  path: data/example\nchecks: [demo]\n'},
   '/runs': [
     {id:'abc123',status:'done',started_by:'Аналитик',created_at:'2026-11-07T12:00:00',finished_at:'2026-11-07T12:10:00',config_id:2},
     {id:'active',status:'running',started_by:'Никита',created_at:'2026-11-07T12:20:00',finished_at:null,config_id:2},
@@ -31,6 +32,7 @@ const responses = {
 const client = {
   api: async path => {calls.push(['GET',path]); if (!(path in responses)) throw Error(`Unhandled ${path}`); return responses[path];},
   post: async (path, body) => {calls.push(['POST',path,body]);
+    if (path === '/configs') return {id:9};
     if (path.endsWith('/explorer/query')) return {rows:[],totalGroups:0,limit:body.limit,offset:body.offset};
     if (path.endsWith('/explorer/apps')) return {items:[],total:0,limit:body.limit,offset:body.offset};
     if (path.endsWith('/drilldown')) return [
@@ -48,6 +50,18 @@ vm.runInNewContext(js,{exports: apiExports,require: id => {
   if (id === './client') return client;
   throw Error('Unexpected dependency '+id);
 },console});
+
+test('creating a template fetches its full YAML and defers only dataset existence checks', async () => {
+  calls.length = 0;
+  const created = await apiExports.createTemplateConfig();
+  assert.equal(created.id, 9);
+  assert.equal(calls[0][0], 'GET');
+  assert.equal(calls[0][1], '/configs/template');
+  assert.equal(calls[1][0], 'POST');
+  assert.equal(calls[1][1], '/configs');
+  assert.equal(calls[1][2].yaml, responses['/configs/template'].yaml);
+  assert.equal(calls[1][2].check_dataset, false);
+});
 
 test('Explorer preserves exact drilldown filters, opaque array keys and pagination', async () => {
   const filters = {PATH:'items.amount', DIFF_FLAG:1, ARRAY_KEY:'a%7Cb|x+y', VALUE_BEFORE:[null], VALUE_AFTER:['NULL']};
