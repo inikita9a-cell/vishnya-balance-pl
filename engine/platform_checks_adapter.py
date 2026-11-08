@@ -155,6 +155,10 @@ def run_checks(state: dict) -> str:
     rows inside checks.json via checks_service.
     """
     cfg = state['cfg']
+    if os.getenv('APP_ENV', 'development') != 'development':
+        validate_staging_checks(cfg)
+        if state.get('checks_dir'):
+            raise ValueError('Custom checks directory disabled')
     if not isinstance(cfg, dict):
         raise TypeError('state.cfg must be a dict')
     run_dir = Path(state['run_dir']).resolve()
@@ -170,7 +174,10 @@ def run_checks(state: dict) -> str:
     with tempfile.TemporaryDirectory(prefix='spr_checks_') as td:
         conf_path = Path(td) / 'checks_config.json'
         staged_dir = Path(td) / 'checks'
-        _stage_checks(cfg, selected, checks_dir, staged_dir)
+        if os.getenv("APP_ENV", "development") != "development":
+            staged_dir = checks_dir
+        else:
+            _stage_checks(cfg, selected, checks_dir, staged_dir)
         conf_path.write_text(json.dumps(snapshot, ensure_ascii=False, default=str), encoding='utf-8')
         command = [sys.executable, '-m', 'engine.run_checks', '--run', str(run_dir),
                    '--config', str(conf_path), '--checks-dir', str(staged_dir)]
@@ -190,3 +197,11 @@ def run_checks(state: dict) -> str:
     if not report.is_file():
         raise RuntimeError(f'Checks subprocess completed but did not write {report}')
     return str(report)
+
+
+def validate_staging_checks(cfg):
+    if not isinstance(cfg, dict) or cfg.get('overrides'):
+        raise ValueError('Python overrides disabled')
+    selected = cfg.get('checks', list(_DEFAULT_CHECKS))
+    if not isinstance(selected, list) or any(not isinstance(x, str) or x not in _DEFAULT_CHECKS for x in selected):
+        raise ValueError('Only packaged check IDs allowed')

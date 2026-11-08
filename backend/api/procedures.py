@@ -54,6 +54,11 @@ def create_proc(body: ProcIn, user: str = Depends(current_user)):
 @router.post("/{pid}/try")
 def try_proc(pid: int, body: TryIn, user: str = Depends(current_user)):
     """Выполнить процедуру на 1–3 заявках в песочнице. Для редактора."""
+    from ..auth import staging, owned_run
+    if staging():
+        raise HTTPException(403, "User Python execution disabled")
+    if body.run_id:
+        owned_run(body.run_id, user)
     db = SessionLocal()
     try:
         p = db.get(Procedure, pid)

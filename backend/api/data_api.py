@@ -5,14 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from pydantic import BaseModel, Field
 from ..db import SessionLocal
 from ..models import Run
-from ..auth import current_user, get_run_owned
+from ..auth import current_user, get_run_owned, contained, identifier, run_directory
 from .. import duck
 
 router = APIRouter(prefix="/api/runs", tags=["data"])
 
 
 def _dir(rid: str) -> pathlib.Path:
-    return pathlib.Path("runs") / rid
+    return run_directory(rid)
 
 
 class PivotIn(BaseModel):
@@ -125,10 +125,10 @@ def app_raw(rid: str, app_id: str, user: str = Depends(current_user)):
                 raise HTTPException(404)
             cfg = yaml.safe_load(run.config_snapshot) or {}
             dataset = cfg.get('dataset') or {}
-            base = pathlib.Path(dataset['path'])
+            base = contained('data', pathlib.Path(dataset['path']))
             for tag, key in [('BEFORE_MASTER', 'before_dir'), ('AFTER_BETA', 'after_dir')]:
                 for ext in ('json', 'xml'):
-                    candidate = base / dataset[key] / f'{app_id}.{ext}'
+                    candidate = contained('data', base / dataset[key] / f'{app_id}.{ext}')
                     if candidate.is_file():
                         out[tag] = candidate.read_text(encoding='utf-8-sig')
                         break

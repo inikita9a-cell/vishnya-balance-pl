@@ -42,6 +42,10 @@ def load_check(check_id: str, checks_dir: str | Path = DEFAULT_CHECKS_DIR):
     """Load CHECK by ID; prevent directory traversal from user-provided IDs."""
     if not isinstance(check_id, str) or not _CHECK_ID.fullmatch(check_id):
         raise ValueError(f'Invalid check ID: {check_id!r}')
+    if os.getenv("APP_ENV", "development") != "development":
+        from .platform_checks_adapter import _DEFAULT_CHECKS
+        if Path(checks_dir).resolve() != DEFAULT_CHECKS_DIR.resolve() or check_id not in _DEFAULT_CHECKS:
+            raise ValueError("Only packaged checks allowed")
     path = Path(checks_dir) / f'check_{check_id}.py'
     if not path.is_file():
         raise FileNotFoundError(f'Check not found: {path}')

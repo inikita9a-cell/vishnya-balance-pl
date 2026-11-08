@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from ..auth import current_user, get_run_owned, get_config_owned
 from ..validation import validate_config
+from ..auth import run_directory
 from ..db import SessionLocal
 from ..models import Run, StageLog, Config
 from ..runs import start_run, run_pipeline, rerun_checks
@@ -21,6 +22,8 @@ def create_run(body: RunIn, user: str = Depends(current_user)):
     saved = get_config_owned(body.config_id, user)
     try:
         cfg = yaml.safe_load(saved.yaml) or {}
+        from ..security_config import validate_config as validate_staging_config
+        validate_staging_config(cfg)
         validation = validate_config(cfg, check_dataset=True)
     except (yaml.YAMLError, ValueError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -138,4 +141,4 @@ def report(rid: str, user: str = Depends(current_user)):
     p = pathlib.Path("runs") / rid / "report.html"
     if not p.exists(): raise HTTPException(404)
     from fastapi.responses import FileResponse
-    return FileResponse(p, media_type="text/html")
+    return FileResponse(p, media_type="text/html", headers={"Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'"})

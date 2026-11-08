@@ -7,6 +7,7 @@ import { causeLabel, decision } from '../../api/format';
 import { theme } from '../../styles/Theme';
 import { Panel, PageHeading, ErrorBox, Empty, DataTable, Muted, QuietButton, TextButton, TableScroller, NoticeSpacing } from '../../components/Ui';
 import { InfoNotice } from '../../components/InfoNotice/InfoNotice';
+import { ReportTree } from './ReportTree';
 
 type ReportProps = {
   runId: string;
@@ -22,6 +23,7 @@ export function Report({ runId, onRegistry }: ReportProps) {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [error, setError] = useState('');
   const [matrixMode, setMatrixMode] = useState<'decisions' | 'reasons'>('decisions');
+  const [changesMode, setChangesMode] = useState<'table' | 'tree'>('table');
 
   useEffect(() => {
     let live = true;
@@ -151,7 +153,13 @@ export function Report({ runId, onRegistry }: ReportProps) {
       </TablePanel>
 
       <TablePanel>
-        <SectionHeader><div><h2>Где произошли изменения</h2><p>Доля заявок с отличиями по блокам данных; одна заявка может входить в несколько блоков</p></div></SectionHeader>
+        <SectionHeader><div><h2>Где произошли изменения</h2><p>Доля заявок с отличиями по блокам данных; одна заявка может входить в несколько блоков</p></div>
+          <MatrixMode aria-label="Представление изменений">
+            <MatrixButton type="button" $active={changesMode === 'table'} aria-pressed={changesMode === 'table'} onClick={() => setChangesMode('table')}>Таблица</MatrixButton>
+            <MatrixButton type="button" $active={changesMode === 'tree'} aria-pressed={changesMode === 'tree'} onClick={() => setChangesMode('tree')}>Дерево</MatrixButton>
+          </MatrixMode>
+        </SectionHeader>
+        {changesMode === 'tree' ? <ReportTree runId={runId} /> : <>
         <TableScroller><DataTable>
           <thead><tr><th>Блок данных</th><th>С изменениями</th><th>Доля от заявок</th><th>Изменённых строк</th><th></th></tr></thead>
           <tbody>{blocks.map((block, i) => <tr key={`${block.BLOCK}-${i}`}>
@@ -163,6 +171,7 @@ export function Report({ runId, onRegistry }: ReportProps) {
           </tr>)}</tbody>
         </DataTable></TableScroller>
         {blocks.length === 0 && <Empty>Данных по блокам пока нет</Empty>}
+        </>}
       </TablePanel>
       {summary.quality_issues > 0 && <Footnote>Замечаний по качеству данных: <strong>{number(summary.quality_issues)}</strong>. Подробности доступны на вкладке «Проверки».</Footnote>}
       {summary.llm !== null && summary.llm !== undefined && <Panel>
