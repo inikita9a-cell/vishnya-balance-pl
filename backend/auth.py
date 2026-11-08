@@ -39,8 +39,6 @@ def run_directory(rid):
     return root
 
 def owned_run(rid, user):
-    from .db import SessionLocal
-    from .models import Run
     identifier(rid)
     with SessionLocal() as db:
         row = db.get(Run, rid)
