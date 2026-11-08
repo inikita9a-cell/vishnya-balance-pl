@@ -3,6 +3,14 @@
  * Backend's drilldown returns only a subset of segment columns.
  */
 import { api, post } from './client';
+import type { ExplorerFieldsResponse, ExplorerQueryRequest, ExplorerQueryResponse, ExplorerAppsRequest, ExplorerAppsResponse } from './explorer.types';
+
+export const getExplorerFields = (id: string) =>
+  api<ExplorerFieldsResponse>(`/runs/${encodeURIComponent(id)}/explorer/fields`);
+export const queryExplorer = (id: string, body: ExplorerQueryRequest) =>
+  post<ExplorerQueryResponse>(`/runs/${encodeURIComponent(id)}/explorer/query`, body);
+export const getExplorerApps = (id: string, body: ExplorerAppsRequest) =>
+  post<ExplorerAppsResponse>(`/runs/${encodeURIComponent(id)}/explorer/apps`, body);
 import type { Block, Check, Config, Difference, Pool, Procedure, RawComparison, Run, RunStage, Segment, StepDetail, Summary } from './types';
 
 const n = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : 0;

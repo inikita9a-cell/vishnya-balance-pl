@@ -8,6 +8,7 @@ type HeaderProps = {
     activeSection: StrategySection;
     onSectionChange: (section: StrategySection) => void;
     userName: string;
+    basicAuth?: boolean;
     onLogout: () => void;
 };
 
@@ -15,6 +16,7 @@ export const Header = ({
                            activeSection,
                            onSectionChange,
                            userName,
+                           basicAuth,
                            onLogout,
                        }: HeaderProps) => (
     <Wrapper>
@@ -27,13 +29,13 @@ export const Header = ({
 
         <User>
             <UserName id="header-user-name">{userName}</UserName>
-            <SwitchButton
+            {basicAuth ? <span title="Для смены аккаунта используйте отдельный профиль браузера">{userName}</span> : <SwitchButton
                 type="button"
                 aria-describedby="header-user-name"
                 onClick={onLogout}
             >
                 Сменить пользователя
-            </SwitchButton>
+            </SwitchButton>}
         </User>
     </Wrapper>
 );

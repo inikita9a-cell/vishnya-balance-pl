@@ -14,7 +14,7 @@ venv/
 ENV/
 
 # Project artifacts (То, что просил Клод)
-runs/
+/runs/
 
 # IDEs and editors
 .idea/
@@ -28,3 +28,11 @@ runs/
 # OS junk
 .DS_Store
 Thumbs.db
+
+/data/
+/db/
+*.sqlite*
+*.db
+.env.*
+
+.test-temp/

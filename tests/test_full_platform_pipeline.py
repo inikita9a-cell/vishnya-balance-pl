@@ -293,6 +293,8 @@ def test_real_fastapi_routes_with_sqlite_orchestrator(monkeypatch, tmp_path):
 
     _fake_engine_parts(monkeypatch, tmp_path)
     factory, cid = _sqlite(monkeypatch, tmp_path)
+    from backend import security_config
+    monkeypatch.setattr(security_config, 'SessionLocal', factory)
     monkeypatch.setattr(runs_api, 'SessionLocal', factory)
     monkeypatch.setattr(runs_api, 'start_run', platform_runs.start_run)
     monkeypatch.setattr(runs_api, 'run_pipeline', platform_runs.run_pipeline)
