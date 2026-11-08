@@ -156,7 +156,7 @@ def run_checks(state: dict) -> str:
     """
     cfg = state['cfg']
     if os.getenv('APP_ENV', 'development') != 'development':
-        validate_staging_checks(cfg)
+        validate_staging_checks(cfg, allow_frozen=True)
         if state.get('checks_dir'):
             raise ValueError('Custom checks directory disabled')
     if not isinstance(cfg, dict):
@@ -199,9 +199,24 @@ def run_checks(state: dict) -> str:
     return str(report)
 
 
-def validate_staging_checks(cfg):
-    if not isinstance(cfg, dict) or cfg.get('overrides'):
+def validate_staging_checks(cfg, *, allow_frozen=False):
+    if not isinstance(cfg, dict) or cfg.get('overrides') or cfg.get('procedures'):
         raise ValueError('Python overrides disabled')
     selected = cfg.get('checks', list(_DEFAULT_CHECKS))
-    if not isinstance(selected, list) or any(not isinstance(x, str) or x not in _DEFAULT_CHECKS for x in selected):
+    if not isinstance(selected, list):
         raise ValueError('Only packaged check IDs allowed')
+    for item in selected:
+        if isinstance(item, str) and item in _DEFAULT_CHECKS:
+            continue
+        if allow_frozen and isinstance(item, dict) and item.get('id') in _DEFAULT_CHECKS:
+            # Internal run snapshots may carry code, but only EXACT installed
+            # packaged source is permitted. Raw saved configs still accept IDs only.
+            import hashlib
+            path = _ROOT / 'procedures/checks' / f"check_{item['id']}.py"
+            source = path.read_text(encoding='utf-8-sig')
+            digest = hashlib.sha256(source.encode('utf-8')).hexdigest()
+            if (item.get('source') == 'file' and item.get('code') == source and
+                    item.get('sha256') == digest and
+                    Path(item.get('path', '')).resolve() == path.resolve()):
+                continue
+        raise ValueError('Only packaged check IDs or verified internal snapshots allowed')

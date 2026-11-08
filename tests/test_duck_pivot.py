@@ -73,6 +73,9 @@ class SQLiteShim:
         return pd.DataFrame(self.cursor.fetchall(),
                             columns=[column[0] for column in self.description])
 
+    def fetchone(self):
+        return self.cursor.fetchone()
+
     def close(self):
         self.conn.close()
 
@@ -197,3 +200,44 @@ def test_actual_duckdb_parquet_roundtrip(tmp_path):
         matches = duck.drilldown(tmp_path, clicked)
         assert len(matches) == cell["CNT"]
     assert len(duck.drilldown(tmp_path, {"CHANGE_TYPE": "VALUE_CHANGED"})) == 2
+
+
+def test_pivot_dimension_catalog(run):
+    fields = duck.pivot_dimensions(run)['dimensions']
+    assert 'PATH' in fields and 'ARRAY_KEY' in fields
+    assert 'FACT_ID' not in fields and 'APP_ID' not in fields and 'CNT' not in fields
+
+
+def test_pivot_filter_values_distinguish_null_string_and_empty(run):
+    result = duck.pivot_values(run, 'CAUSE')
+    assert result['field'] == 'CAUSE'
+    assert None in result['values']
+    assert 'LOGIC' in result['values']
+    assert result['has_more'] is False
+    limited = duck.pivot_values(run, 'PATH', limit=2)
+    assert len(limited['values']) == 2 and limited['has_more']
+    with pytest.raises(ValueError, match='Unsupported pivot filter'):
+        duck.pivot_values(run, 'PATH;DROP TABLE x')
+
+
+@pytest.mark.parametrize('filters', [
+    {'PATH': 'risk.age'}, {'SOURCE': 'BEFORE (MASTER)'},
+    {'CAUSE': None}, {'CAUSE': ['LOGIC', None]},
+    {'ARRAY_KEY': None, 'SOURCE': 'AFTER (BETA)'},
+])
+def test_paginated_pivot_apps_match_exact_cell_count(run, filters):
+    expected = [r['APP_ID'] for r in duck.drilldown(run, filters)]
+    first = duck.pivot_apps(run, filters, limit=1, offset=0)
+    second = duck.pivot_apps(run, filters, limit=1, offset=1)
+    assert first['total'] == second['total'] == len(expected)
+    assert [a['APP_ID'] for a in [*first['items'], *second['items']]] == expected[:2]
+    assert len({r['APP_ID'] for r in [*first['items'], *second['items']]}) == min(2,len(expected))
+
+
+def test_pivot_apps_invalid_filters_and_pagination(run):
+    with pytest.raises(ValueError, match='Unsupported pivot filter'):
+        duck.pivot_apps(run, {'CNT': 2})
+    with pytest.raises(ValueError, match='pagination'):
+        duck.pivot_apps(run, {}, limit=0)
+    with pytest.raises(ValueError, match='pagination'):
+        duck.pivot_apps(run, {}, offset=-2)

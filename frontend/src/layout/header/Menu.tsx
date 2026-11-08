@@ -3,7 +3,7 @@ import styled from 'styled-components';
 import {theme} from "../../styles/Theme.ts";
 
 
-export type StrategySection = 'runs' | 'report' | 'registry' | 'config' | 'checks';
+export type StrategySection = 'runs' | 'report' | 'pivot' | 'registry' | 'config' | 'checks';
 
 type MenuProps = {
   activeSection: StrategySection;
@@ -13,6 +13,7 @@ type MenuProps = {
 const items: [StrategySection, string][] = [
   ['runs', 'Запуски'],
   ['report', 'Отчёт'],
+  ['pivot', 'Сводная'],
   ['registry', 'Реестр'],
   ['checks', 'Проверки'],
   ['config', 'Настройки'],
@@ -45,7 +46,7 @@ export const Menu = ({ activeSection, onSectionChange }: MenuProps) => {
 };
 
 const Navigation = styled.nav`
-  width: min(100%, 580px);
+  width: min(100%, 710px);
   justify-self: center;
   overflow-x: auto;
   scrollbar-width: none;
@@ -60,7 +61,7 @@ const Track = styled.div`
   display: flex;
   align-items: center;
   box-sizing: border-box;
-  min-width: 520px;
+  min-width: 590px;
   height: 52px;
   padding: 5px;
 
@@ -73,7 +74,7 @@ const ActiveIndicator = styled.span`
   position: absolute;
   top: 5px;
   left: 5px;
-  width: calc((100% - 10px) / 5);
+  width: calc((100% - 10px) / 6);
   height: calc(100% - 10px);
 
   border-radius: 999px;

@@ -5,5 +5,5 @@ export function deepLinkedApplication(filters: Record<string, unknown>, availabl
 }
 
 export function retainDeepLinkAfterLogin(section: string, runId: string): boolean {
-  return !!runId && ['report', 'registry', 'detail', 'checks', 'step'].includes(section);
+  return !!runId && ['report', 'pivot', 'registry', 'detail', 'checks', 'step'].includes(section);
 }

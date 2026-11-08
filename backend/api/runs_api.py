@@ -109,6 +109,21 @@ class ChecksRerunIn(BaseModel):
 
 @router.post("/{rid}/checks/rerun")
 def rerun(rid: str, body: ChecksRerunIn | None = None, user: str = Depends(current_user)):
+    from ..auth import staging
+    if staging():
+        # Validate BEFORE queue_checks reads/freezes any source file from a body.
+        from engine.platform_checks_adapter import validate_staging_checks
+        from ..security_config import validate_saved_config
+        try:
+            if body and body.config_id is not None:
+                validate_saved_config(body.config_id, user)
+            else:
+                saved = get_run_owned(rid, user)
+                validate_staging_checks(yaml.safe_load(saved.config_snapshot), allow_frozen=True)
+            if body and body.checks is not None:
+                validate_staging_checks({'checks': body.checks})
+        except (ValueError, TypeError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
     try:
         job = queue_checks(rid, user, **(body.model_dump() if body else {}))
     except CheckJobError as exc:
@@ -144,5 +159,11 @@ def report(rid: str, user: str = Depends(current_user)):
     get_run_readable(rid, user)
     p = pathlib.Path("runs") / rid / "report.html"
     if not p.exists(): raise HTTPException(404)
+    import os
+    if os.getenv('PUBLIC_ORIGIN'):
+        from ..web_links import public_report_links
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(public_report_links(p.read_text(encoding='utf-8'), os.environ['PUBLIC_ORIGIN'], rid),
+                            headers={"Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'"})
     from fastapi.responses import FileResponse
     return FileResponse(p, media_type="text/html", headers={"Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'"})

@@ -30,7 +30,19 @@ def _load_default_template() -> str:
 @router.get("/template")
 def get_template():
     """Ready-to-edit config skeleton for the 'Create from template' button."""
-    return {"yaml": _load_default_template()}
+    text = _load_default_template()
+    # The server's approved datasets may live outside the repository on Windows.
+    from ..auth import staging, data_directory
+    import os
+    if staging() and os.getenv('DATA_DIR'):
+        cfg = yaml.safe_load(text)
+        path = pathlib.Path(cfg['dataset']['path'])
+        if not path.is_absolute() and path.is_relative_to('data'):
+            candidate = data_directory(pathlib.Path(os.environ['DATA_DIR']) / path.relative_to('data'))
+            if candidate.is_dir():
+                cfg['dataset']['path'] = candidate.as_posix()
+                text = yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False)
+    return {"yaml": text}
 
 
 @router.post("/validate")

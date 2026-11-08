@@ -1,6 +1,6 @@
 /** UI view models, normalized from the actual Python backend responses in real.ts. */
 export type Page<T> = { items: T[]; total: number; offset: number; limit: number };
-export type User = { name: string; id?: string };
+export type User = { name: string; id?: string; auth_mode?: 'basic' | string };
 export type RunStage = {
   step: string;
   status: string;
@@ -42,6 +42,7 @@ export type Summary = {
   verdict?: { status: string; reason_codes: string[]; disclaimer: string };
 };
 export type Segment = {
+  REASON_TRANSITION?: string | null;
   APP_ID: string;
   DECISION_BEFORE: string | null;
   DECISION_AFTER: string | null;
@@ -55,9 +56,12 @@ export type Segment = {
 };
 export type Difference = {
   APP_ID: string;
+  ARRAY_KEY?: string | null;
   PATH: string;
   VALUE_BEFORE: string;
   VALUE_AFTER: string;
+  ADJUSTED_BEFORE?: string | null;
+  ADJUSTED_AFTER?: string | null;
   DIFF_FLAG: number;
   CHANGE_TYPE: string;
 };

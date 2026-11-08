@@ -22,14 +22,19 @@ def staging():
 
 def reports_shared():
     """Explicit team report visibility; configuration ownership is unaffected."""
-    return os.getenv('REPORT_ACCESS', 'private') == 'shared'
+    default = 'private' if staging() else 'shared'
+    return os.getenv('REPORT_ACCESS', default) == 'shared'
+
+def data_directory(path):
+    """Explicit server data root; local development still accepts external datasets."""
+    return contained(os.getenv('DATA_DIR', 'data'), path) if staging() else Path(path).resolve()
 
 def report_read_request(request):
     if request.method in ('GET', 'HEAD'):
         return True
     # These POST operations query existing artifacts and do not change a run.
     return request.method == 'POST' and re.fullmatch(
-        r'/api/runs/[A-Za-z0-9_-]+/(?:pivot|drilldown|sankey|explorer/(?:query|apps)|checks/[^/]+/apps)',
+        r'/api/runs/[A-Za-z0-9_-]+/(?:pivot(?:/apps)?|drilldown|sankey|explorer/(?:query|apps)|checks/[^/]+/apps)',
         request.url.path) is not None
 
 def contained(root, path):

@@ -46,7 +46,9 @@ if os.getenv("STATIC_DIR"):
     class SPAFiles(StaticFiles):
         async def get_response(self, path, scope):
             from starlette.exceptions import HTTPException
-            if path == "api" or path.startswith("api/"):
+            # StaticFiles supplies OS-native separators (backslashes on Windows).
+            url_path = path.replace("\\", "/").lstrip("/")
+            if url_path == "api" or url_path.startswith("api/"):
                 raise HTTPException(404)
             try:
                 return await super().get_response(path, scope)

@@ -7,11 +7,11 @@ import { dateTime, isRunActive, isRunDone, stageLabel, status } from '../../api/
 import { PageHeading, Panel, DataTable, TableScroller, TextButton, QuietButton, Empty, ErrorBox, Muted } from '../../components/Ui';
 
 type Props = {
-  id: string; onBack: () => void; onReport: () => void; onRegistry: () => void;
+  id: string; onBack: () => void; onReport: () => void; onPivot: () => void; onRegistry: () => void;
   onChecks: () => void; onStep: (key: string) => void;
 };
 
-export function RunDetail({ id, onBack, onReport, onRegistry, onChecks, onStep }: Props) {
+export function RunDetail({ id, onBack, onReport, onPivot, onRegistry, onChecks, onStep }: Props) {
   const [run, setRun] = useState<Run | null>(null);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
@@ -46,6 +46,7 @@ export function RunDetail({ id, onBack, onReport, onRegistry, onChecks, onStep }
         {run.error && <ErrorBox role="alert">{run.error}</ErrorBox>}
         <Actions>
           <QuietButton type="button" disabled={!isRunDone(run.status)} onClick={onReport}>Сравнительный отчёт</QuietButton>
+          <QuietButton type="button" disabled={!isRunDone(run.status)} onClick={onPivot}>Свободная сводная</QuietButton>
           <QuietButton type="button" disabled={!isRunDone(run.status)} onClick={onRegistry}>Реестр заявок</QuietButton>
           <QuietButton type="button" disabled={!isRunDone(run.status)} onClick={onChecks}>Проверки</QuietButton>
         </Actions>

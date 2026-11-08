@@ -21,3 +21,6 @@ notebooks/.ipynb_checkpoints
 **/*.sqlite*
 
 .test-temp
+.local
+.tools
+.venv-web

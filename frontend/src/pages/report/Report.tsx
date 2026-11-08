@@ -8,6 +8,7 @@ import { theme } from '../../styles/Theme';
 import { Panel, PageHeading, ErrorBox, Empty, DataTable, Muted, QuietButton, TextButton, TableScroller, NoticeSpacing } from '../../components/Ui';
 import { InfoNotice } from '../../components/InfoNotice/InfoNotice';
 import { ReportTree } from './ReportTree';
+import { ReportSankey } from './ReportSankey';
 
 type ReportProps = {
   runId: string;
@@ -23,7 +24,7 @@ export function Report({ runId, onRegistry }: ReportProps) {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [error, setError] = useState('');
   const [matrixMode, setMatrixMode] = useState<'decisions' | 'reasons'>('decisions');
-  const [changesMode, setChangesMode] = useState<'table' | 'tree'>('table');
+  const [changesMode, setChangesMode] = useState<'sankey' | 'tree'>('sankey');
 
   useEffect(() => {
     let live = true;
@@ -43,8 +44,6 @@ export function Report({ runId, onRegistry }: ReportProps) {
   const changedDecision = summary?.apps_decision_changed ?? 0;
   const changedSameDecision = summary?.apps_diff_same_decision ?? 0;
   const unchanged = Math.max(0, total - (summary?.apps_with_diff ?? 0));
-  const decisionsEnd = share(changedDecision, total);
-  const diffsEnd = share(changedDecision + changedSameDecision, total);
   const approvalDelta = summary ? ((summary.AR_after ?? 0) - (summary.AR_before ?? 0)) * 100 : 0;
 
   return <>
@@ -74,13 +73,13 @@ export function Report({ runId, onRegistry }: ReportProps) {
           <Muted>{number(total)} заявок в анализе</Muted>
         </SectionHeader>
         <OverviewContent>
-          <Donut
-            role="img"
-            aria-label={`Из ${total} заявок: смена решения ${changedDecision}, изменение параметров без смены решения ${changedSameDecision}, без изменений ${unchanged}`}
-            style={{ background: `conic-gradient(${theme.colors.accent} 0 ${decisionsEnd}%, #efbba7 ${decisionsEnd}% ${diffsEnd}%, #e7e7eb ${diffsEnd}% 100%)` }}
-          >
-            <DonutCenter><strong>{number(total)}</strong><span>всего заявок</span></DonutCenter>
-          </Donut>
+          <ChartArea>
+            <MatrixMode aria-label="Диаграмма картины изменений">
+              <MatrixButton type="button" $active={changesMode === 'sankey'} aria-pressed={changesMode === 'sankey'} onClick={() => setChangesMode('sankey')}>Потоки решений</MatrixButton>
+              <MatrixButton type="button" $active={changesMode === 'tree'} aria-pressed={changesMode === 'tree'} onClick={() => setChangesMode('tree')}>Дерево атрибутов</MatrixButton>
+            </MatrixMode>
+            {changesMode === 'sankey' ? <ReportSankey key={runId} runId={runId} onRegistry={onRegistry} /> : <ReportTree runId={runId} />}
+          </ChartArea>
           <Legend>
             <LegendRow type="button" onClick={() => onRegistry({ DECISION_CHANGED: true })}>
               <LegendName><LegendDot $color={theme.colors.accent} />Смена решения</LegendName>
@@ -154,12 +153,7 @@ export function Report({ runId, onRegistry }: ReportProps) {
 
       <TablePanel>
         <SectionHeader><div><h2>Где произошли изменения</h2><p>Доля заявок с отличиями по блокам данных; одна заявка может входить в несколько блоков</p></div>
-          <MatrixMode aria-label="Представление изменений">
-            <MatrixButton type="button" $active={changesMode === 'table'} aria-pressed={changesMode === 'table'} onClick={() => setChangesMode('table')}>Таблица</MatrixButton>
-            <MatrixButton type="button" $active={changesMode === 'tree'} aria-pressed={changesMode === 'tree'} onClick={() => setChangesMode('tree')}>Дерево</MatrixButton>
-          </MatrixMode>
         </SectionHeader>
-        {changesMode === 'tree' ? <ReportTree runId={runId} /> : <>
         <TableScroller><DataTable>
           <thead><tr><th>Блок данных</th><th>С изменениями</th><th>Доля от заявок</th><th>Изменённых строк</th><th></th></tr></thead>
           <tbody>{blocks.map((block, i) => <tr key={`${block.BLOCK}-${i}`}>
@@ -171,7 +165,6 @@ export function Report({ runId, onRegistry }: ReportProps) {
           </tr>)}</tbody>
         </DataTable></TableScroller>
         {blocks.length === 0 && <Empty>Данных по блокам пока нет</Empty>}
-        </>}
       </TablePanel>
       {summary.quality_issues > 0 && <Footnote>Замечаний по качеству данных: <strong>{number(summary.quality_issues)}</strong>. Подробности доступны на вкладке «Проверки».</Footnote>}
       {summary.llm !== null && summary.llm !== undefined && <Panel>
@@ -191,20 +184,9 @@ const SectionHeader = styled.div`
   p { margin-top: 6px; color: #888892; font: 400 12px ${theme.fonts.interface}; line-height: 1.55; }
 `;
 const OverviewContent = styled.div`
-  display: grid; grid-template-columns: minmax(220px, 340px) minmax(0, 1fr);
-  align-items: center; gap: clamp(22px, 5vw, 75px); padding: 4px 12px 12px;
-  @media (max-width: 740px) { grid-template-columns: 1fr; justify-items: center; padding: 0; width: 100%; }
+  display: grid; gap: 22px; min-width: 0;
 `;
-const Donut = styled.div`
-  width: min(100%, 285px); aspect-ratio: 1; border-radius: 50%;
-  display: grid; place-items: center; margin: auto;
-`;
-const DonutCenter = styled.div`
-  width: 69%; aspect-ratio: 1; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; border-radius: 50%; background: #fff;
-  strong { font: 600 clamp(27px, 4vw, 42px) ${theme.fonts.heading}; letter-spacing: -1.5px; }
-  span { font: 500 12px ${theme.fonts.interface}; color: #91919b; margin-top: 5px; }
-`;
+const ChartArea = styled.div`min-width: 0; width: 100%;`;
 const Legend = styled.div` width: 100%; display: grid; `;
 const LegendRow = styled.button`
   display: flex; align-items: center; justify-content: space-between; gap: 20px;

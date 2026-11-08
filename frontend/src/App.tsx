@@ -6,6 +6,7 @@ import { Login } from './pages/login/Login';
 import { Runs } from './pages/runs/Runs';
 import { RunDetail } from './pages/runs/RunDetail';
 import { Report } from './pages/report/Report';
+import { Pivot } from './pages/report/Pivot';
 import { Registry } from './pages/registry/Registry';
 import { Checks } from './pages/checks/Checks';
 import { Step } from './pages/steps/Step';
@@ -32,7 +33,7 @@ function parseFilters(value: string | null): Record<string, unknown> {
 function currentLocation(): Location {
   const params = new URLSearchParams(window.location.search);
   const section = params.get('page');
-  const allowed = ['runs', 'report', 'registry', 'checks', 'config', 'detail', 'step'];
+  const allowed = ['runs', 'report', 'pivot', 'registry', 'checks', 'config', 'detail', 'step'];
   return {
     section: allowed.includes(section ?? '') ? section as Location['section'] : 'runs',
     runId: params.get('run') || '',
@@ -71,7 +72,7 @@ function App() {
     window.scrollTo(0, 0);
   }
   async function selectSection(section: StrategySection) {
-    if (['registry', 'report', 'checks'].includes(section) && !location.runId) {
+    if (['registry', 'report', 'pivot', 'checks'].includes(section) && !location.runId) {
       try {
         const result = await getRuns();
         const completed = result.filter(r => isRunDone(r.status)).sort((a, b) => b.created_at.localeCompare(a.created_at));
@@ -105,7 +106,7 @@ function App() {
     setUser(u);
     if (!retainDeepLinkAfterLogin(location.section, location.runId)) navigate('runs', '');
   }} />;
-  const section: StrategySection = ['report', 'registry', 'checks', 'config'].includes(location.section) ? location.section as StrategySection : 'runs';
+  const section: StrategySection = ['report', 'pivot', 'registry', 'checks', 'config'].includes(location.section) ? location.section as StrategySection : 'runs';
   return <Container>
     <Header
       activeSection={section}
@@ -125,10 +126,12 @@ function App() {
         id={location.runId}
         onBack={() => navigate('runs')}
         onReport={() => navigate('report')}
+        onPivot={() => navigate('pivot')}
         onRegistry={() => navigate('registry')}
         onChecks={() => navigate('checks')}
         onStep={key => navigate('step', location.runId, key)} />}
       {location.section === 'step' && <Step runId={location.runId} step={location.step} onBack={() => navigate('detail')} onHistory={() => navigate('runs')} />}
+      {location.section === 'pivot' && <Pivot runId={location.runId} onOpenApp={id => navigate('registry', location.runId, '', {APP_ID: id})} />}
       {location.section === 'report' && <Report runId={location.runId} onRegistry={filters => navigate('registry', location.runId, '', filters)} />}
       {location.section === 'registry' && <Registry runId={location.runId} filters={location.filters} onRun={() => navigate('detail')} onRunChange={id => navigate('registry', id)} onClearFilters={() => navigate('registry', location.runId)} />}
       {location.section === 'checks' && <Checks runId={location.runId} />}

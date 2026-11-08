@@ -4,6 +4,7 @@
  */
 import { api, post } from './client';
 import type { Block, Check, CheckAppsPage, Config, Difference, Pool, Procedure, RawComparison, Run, RunStage, Segment, StepDetail, Summary } from './types';
+import type { ExplorerFieldsResponse, ExplorerQueryRequest, ExplorerQueryResponse, ExplorerAppsRequest, ExplorerAppsResponse } from './explorer.types';
 
 const n = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : 0;
 const s = (value: unknown): string => value == null ? '' : String(value);
@@ -63,6 +64,23 @@ export async function getRun(id: string): Promise<Run> {
 export async function getConfigs(): Promise<Config[]> {
   return (await api<ServerConfig[]>('/configs')).map(c => ({ id: String(c.id), name: c.name, yaml: c.yaml }));
 }
+/** Create the default template from the backend, without requiring a mounted dataset at creation time. */
+export async function createTemplateConfig(): Promise<{ id: number }> {
+  const template = await api<{ yaml: string }>('/configs/template');
+  return post<{ id: number }>('/configs', {
+    name: 'Новый пресет из шаблона', yaml: template.yaml, check_dataset: false,
+  });
+}
+export async function getExplorerFields(id: string): Promise<ExplorerFieldsResponse> {
+  return api<ExplorerFieldsResponse>(`/runs/${encodeURIComponent(id)}/explorer/fields`);
+}
+export async function queryExplorer(id: string, body: ExplorerQueryRequest): Promise<ExplorerQueryResponse> {
+  return post<ExplorerQueryResponse>(`/runs/${encodeURIComponent(id)}/explorer/query`, body);
+}
+export async function getExplorerApps(id: string, body: ExplorerAppsRequest): Promise<ExplorerAppsResponse> {
+  return post<ExplorerAppsResponse>(`/runs/${encodeURIComponent(id)}/explorer/apps`, body);
+}
+
 export async function getPools(): Promise<Pool[]> {
   return (await api<ServerPool[]>('/pools')).map(p => ({
     id: String(p.id), name: p.name, payload: p.payload,
@@ -135,6 +153,36 @@ export async function rerunChecks(id: string): Promise<void> {
   // Server returns {ok:true} immediately; results are updated in a background thread.
   await post(`/runs/${encodeURIComponent(id)}/checks/rerun`, {});
 }
+export type PivotValue = string | number | boolean | null;
+export type PivotFilters = Record<string, PivotValue | PivotValue[]>;
+export interface PivotRecord { CNT: number; [dimension: string]: PivotValue }
+export interface PivotResponse { columns: string[]; rows: PivotRecord[]; dims: string[] }
+export interface PivotApp {
+  APP_ID: string; DECISION_BEFORE: string | null; DECISION_AFTER: string | null;
+  DECISION_TRANSITION: string | null; REASON_TRANSITION: string | null;
+  N_DIFFS: number; CAUSE: string | null;
+}
+export interface PivotAppsPage { items: PivotApp[]; total: number; limit: number; offset: number }
+export function getPivotDimensions(id: string): Promise<{ dimensions: string[] }> {
+  return api<{ dimensions: string[] }>(`/runs/${encodeURIComponent(id)}/pivot/dimensions`);
+}
+export function getPivotValues(id: string, field: string): Promise<{ field: string; values: PivotValue[]; has_more: boolean }> {
+  return api(`/runs/${encodeURIComponent(id)}/pivot/values?field=${encodeURIComponent(field)}`);
+}
+export function getPivot(id: string, rows: string[], cols: string[], filters: PivotFilters): Promise<PivotResponse> {
+  return post(`/runs/${encodeURIComponent(id)}/pivot`, { rows, cols, filters });
+}
+export function getPivotApps(id: string, filters: PivotFilters, limit = 50, offset = 0): Promise<PivotAppsPage> {
+  return post(`/runs/${encodeURIComponent(id)}/pivot/apps`, { filters, limit, offset });
+}
+/** The chosen cell may be SAME; load all attributes, not only changes. */
+export async function getAppComparisonRows(id: string, appId: string): Promise<Difference[]> {
+  const result = await api<ServerDifference[]>(`/runs/${encodeURIComponent(id)}/apps/${encodeURIComponent(appId)}?diff_only=0`);
+  return result.map(row => ({ ...row,
+    VALUE_BEFORE: printValue(row.VALUE_BEFORE), VALUE_AFTER: printValue(row.VALUE_AFTER),
+  }));
+}
+
 export async function getDrilldown(id: string): Promise<Segment[]> {
   // Backend returns ALL rows as an array and supports comparison-table columns ONLY.
   // Fetch once then perform decision/cause filters on the client (2,002 apps are manageable).
@@ -148,6 +196,7 @@ export async function getDrilldown(id: string): Promise<Segment[]> {
     return {
       APP_ID: s(row.APP_ID), DECISION_BEFORE: row.DECISION_BEFORE,
       DECISION_AFTER: row.DECISION_AFTER, DECISION_CHANGED: decisionChanged,
+      REASON_TRANSITION: row.REASON_TRANSITION,
       REASON_BEFORE: reason(reasonParts[0]), REASON_AFTER: reason(reasonParts[1]),
       N_DIFFS: n(row.N_DIFFS), HAS_DIFF: n(row.N_DIFFS) > 0,
       CAUSE: s(row.CAUSE), QUALITY_ISSUE: null,
@@ -158,6 +207,7 @@ export async function getDrilldown(id: string): Promise<Segment[]> {
 export function filterSegments(segments: Segment[], filters: Record<string, unknown>): Segment[] {
   return segments.filter(seg => Object.entries(filters).every(([key, val]) => {
     if (key === 'REASON_TRANSITION') {
+      if ('REASON_TRANSITION' in seg) return seg.REASON_TRANSITION === val;
       const label = `${seg.REASON_BEFORE ?? '∅'}→${seg.REASON_AFTER ?? '∅'}`;
       return label === val;
     }

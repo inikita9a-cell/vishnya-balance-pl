@@ -121,6 +121,64 @@ def _where(filters: dict | None, allowed: set[str]) -> tuple[str, list]:
     return ("WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
+def pivot_dimensions(run_dir: pathlib.Path) -> dict:
+    """List permitted pivot dimensions from THIS run's real facts schema."""
+    run_dir = pathlib.Path(run_dir)
+    _require_files(run_dir, "facts", "fact_apps")
+    con = _con(run_dir)
+    try:
+        return {"dimensions": sorted(_fact_dims(con))}
+    finally:
+        con.close()
+
+
+def pivot_values(run_dir: pathlib.Path, field: str, limit: int = 200) -> dict:
+    """Give frontend real filter choices, preserving distinct SQL NULL values."""
+    run_dir = pathlib.Path(run_dir)
+    _require_files(run_dir, "facts", "fact_apps")
+    con = _con(run_dir)
+    try:
+        if field not in _fact_dims(con):
+            raise ValueError(f"Unsupported pivot filter: {field!r}")
+        if not 1 <= limit <= 500:
+            raise ValueError("Invalid pivot values limit")
+        values = con.execute(
+            f"SELECT DISTINCT {_sql_col(field)} AS value "
+            f"FROM facts AS f ORDER BY value LIMIT ?", [limit + 1]
+        ).df()['value']
+        values = values.astype(object).where(values.notna(), None).tolist()
+        return {"field": field, "values": values[:limit], "has_more": len(values) > limit}
+    finally:
+        con.close()
+
+
+def pivot_apps(run_dir: pathlib.Path, filters: dict, limit: int = 50,
+               offset: int = 0) -> dict:
+    """Server-paginated exact set of unique apps for one pivot cell."""
+    run_dir = pathlib.Path(run_dir)
+    _require_files(run_dir, "facts", "fact_apps", "segments")
+    if not 1 <= limit <= 500 or offset < 0:
+        raise ValueError("Invalid pivot application pagination")
+    con = _con(run_dir)
+    try:
+        where, params = _where(filters, _fact_dims(con))
+        joined = f"FROM fact_apps AS fa JOIN facts AS f ON fa.FACT_ID = f.FACT_ID {where}"
+        total = con.execute(f"SELECT COUNT(DISTINCT fa.APP_ID) {joined}", params).fetchone()[0]
+        query = f"""
+            SELECT selected.APP_ID, s.DECISION_BEFORE, s.DECISION_AFTER,
+                   s.DECISION_TRANSITION, s.REASON_TRANSITION, s.N_DIFFS, s.CAUSE
+            FROM (SELECT DISTINCT fa.APP_ID {joined}
+                  ORDER BY fa.APP_ID LIMIT ? OFFSET ?) AS selected
+            LEFT JOIN segments AS s ON s.APP_ID = selected.APP_ID
+            ORDER BY selected.APP_ID
+        """
+        df = con.execute(query, [*params, limit, offset]).df()
+        items = df.astype(object).where(df.notna(), None).to_dict(orient="records")
+        return {"items": items, "total": int(total), "limit": limit, "offset": offset}
+    finally:
+        con.close()
+
+
 def pivot(run_dir: pathlib.Path, rows: list[str], cols: list[str], filters: dict) -> dict:
     """Counts DISTINCT applications, not additive fact-row counts.
 
@@ -199,124 +257,51 @@ def app_rows(run_dir: pathlib.Path, app_id: str, diff_only: bool) -> list[dict]:
         con.close()
 
 
-def _sankey_clean(val: str | None, default: str = "НЕТ ДАННЫХ") -> str:
-    """Приводит значения к строкам для ECharts. NULL и пустые строки заменяет на default."""
-    if val is None or str(val).strip() == "" or str(val).lower() == "nan":
-        return default
-    return str(val)
-
-
 def get_sankey_data(run_dir: pathlib.Path, filters: dict | None = None) -> dict:
-    """
-    Возвращает узлы и связи для диаграммы Санкей (ECharts).
-    Строится по переходам DECISION_BEFORE -> DECISION_AFTER -> REASON_TRANSITION.
-    """
+    """Acyclic BEFORE -> AFTER -> reason flows; unique applications per link."""
+    import json
     run_dir = pathlib.Path(run_dir)
     _require_files(run_dir, "segments")
     con = _con(run_dir)
-
     try:
-        # Используем уже готовую логику _where для фильтров.
-        # Ограничиваем доступные для фильтрации колонки теми, что есть в segments.
-        allowed_dims = {
-            "DECISION_BEFORE", "DECISION_AFTER", "DECISION_TRANSITION",
-            "REASON_BEFORE", "REASON_AFTER", "REASON_TRANSITION",
-            "CAUSE", "PARTNER_TYPE", "ROUTING_METHOD"
-        }
+        allowed_dims = {"DECISION_BEFORE", "DECISION_AFTER", "DECISION_TRANSITION",
+                        "REASON_BEFORE", "REASON_AFTER", "REASON_TRANSITION",
+                        "CAUSE", "PARTNER_TYPE", "ROUTING_METHOD"}
         where, params = _where(filters, allowed_dims)
+        rows = con.execute(f"""
+            SELECT DECISION_BEFORE, DECISION_AFTER, REASON_TRANSITION,
+                   COUNT(DISTINCT APP_ID) AS CNT
+            FROM segments f {where}
+            GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
+        """, params).fetchall()
+        nodes, links = {}, {}
 
-        # Запрашиваем переходы и считаем количество уникальных APP_ID
-        sql = f"""
-            SELECT
-                DECISION_BEFORE,
-                DECISION_AFTER,
-                REASON_TRANSITION,
-                COUNT(DISTINCT APP_ID) AS CNT
-            FROM segments
-            {where}
-            GROUP BY 1, 2, 3
-            ORDER BY CNT DESC
-        """
-        df = con.execute(sql, params).df()
+        def node(stage, value, after=None):
+            # IDs encode both stage and raw value: no BEFORE/AFTER cycles,
+            # no collision between SQL NULL, the string 'NULL' and empty string.
+            key = json.dumps([stage, after, value], ensure_ascii=False)
+            field = ("DECISION_BEFORE", "DECISION_AFTER", "REASON_TRANSITION")[stage]
+            label = "Нет данных" if value is None else "Пустая строка" if value == "" else str(value)
+            label = {"APPROVE": "Одобрено", "REJECT": "Отказ"}.get(label, label) if stage < 2 else label
+            exact_filters = {field: value}
+            if stage == 2:
+                exact_filters["DECISION_AFTER"] = after
+            nodes[key] = {"name": key, "label": label, "depth": stage, "filters": exact_filters}
+            return key
 
-        if df.empty:
-            return {"nodes": [], "links": []}
-
-        # Формируем данные для ECharts
-        nodes_set = set()
-        links = []
-
-        # Чтобы Санкей не путалась, узлы разных уровней (решения vs причины)
-        # должны иметь уникальные имена.
-        # Уровень 1: BEFORE; Уровень 2: AFTER; Уровень 3: Причины (только для AFTER=REJECT).
-
-        for _, row in df.iterrows():
-            before = _sankey_clean(row["DECISION_BEFORE"])
-            after = _sankey_clean(row["DECISION_AFTER"])
-            reason = _sankey_clean(row["REASON_TRANSITION"])
-            cnt = int(row["CNT"])
-
-            if cnt == 0:
+        for before, after, reason, count in rows:
+            count = int(count)
+            if count <= 0:
                 continue
-
-            # Добавляем узлы
-            nodes_set.add(before)
-            nodes_set.add(after)
-
-            # Связь: BEFORE -> AFTER
-            links.append({
-                "source": before,
-                "target": after,
-                "value": cnt
-            })
-
-            # Если в AFTER решение REJECT, то добавляем ветку к причинам
-            # (Можно также добавить ветку для APPROVE, если есть причины)
-            if after == "REJECT" and reason and reason != "НЕТ ДАННЫХ":
-                # Чтобы не было коллизий имен (если причина называется как решение),
-                # добавляем префикс "Причина: "
-                reason_node = f"Причина: {reason}"
-                nodes_set.add(reason_node)
-                links.append({
-                    "source": after,
-                    "target": reason_node,
-                    "value": cnt
-                })
-            elif after == "APPROVE":
-                # Для одобрений можно добавить "Одобрено"
-                approve_node = "Одобрено"
-                nodes_set.add(approve_node)
-                links.append({
-                    "source": after,
-                    "target": approve_node,
-                    "value": cnt
-                })
-
-        # Группируем одинаковые связи (ECharts требует уникальные пары source-target)
-        # Например, если разные причины вели к одному REJECT
-        grouped_links = {}
-        for link in links:
-            key = (link["source"], link["target"])
-            grouped_links[key] = grouped_links.get(key, 0) + link["value"]
-
-        final_links = [
-            {"source": s, "target": t, "value": v}
-            for (s, t), v in grouped_links.items() if v > 0
-        ]
-
-        # Сортируем узлы: сначала все BEFORE, потом AFTER, потом причины/одобрения
-        # (ECharts сам разложит по уровням, но так красивее)
-        def node_sort_key(name):
-            if name in ("APPROVE", "REJECT", "НЕТ ДАННЫХ"):
-                return (1, name)
-            if name in ("Одобрено",) or name.startswith("Причина: "):
-                return (3, name)
-            return (2, name)
-
-        nodes = [{"name": name} for name in sorted(nodes_set, key=node_sort_key)]
-
-        return {"nodes": nodes, "links": final_links}
-
+            source, target = node(0, before), node(1, after)
+            pairs = [(source, target, {"DECISION_BEFORE": before, "DECISION_AFTER": after}),
+                     (target, node(2, reason, after), {"DECISION_AFTER": after, "REASON_TRANSITION": reason})]
+            for source, target, exact_filters in pairs:
+                key = source, target
+                if key not in links:
+                    links[key] = {"source": source, "target": target, "value": 0, "filters": exact_filters}
+                links[key]["value"] += count
+        return {"nodes": list(nodes.values()), "links": list(links.values())}
     finally:
         con.close()
 

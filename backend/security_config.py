@@ -1,6 +1,6 @@
 import yaml
 from fastapi import HTTPException
-from .auth import staging, contained
+from .auth import staging, contained, data_directory
 from .db import SessionLocal
 from .models import Config, Run
 
@@ -11,7 +11,7 @@ def validate_config(cfg):
     try:
         validate_staging_checks(cfg)
         dataset = cfg["dataset"]
-        base = contained("data", dataset["path"])
+        base = data_directory(dataset["path"])
         contained(base, base / "manifest.json")
         for key in ("before_dir", "after_dir"):
             directory = contained(base, base / dataset[key])

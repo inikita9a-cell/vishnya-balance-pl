@@ -7,6 +7,7 @@ import os
 import re
 from urllib.parse import urlsplit
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 def settings():
     users = json.loads(os.environ["STAGING_USERS_JSON"])
@@ -17,7 +18,7 @@ def settings():
     if not isinstance(users, dict) or not users:
         raise ValueError("Allowlist required")
     for name, encoded in users.items():
-        if not re.fullmatch(r"[a-zA-Z0-9_.@-]{1,64}", name):
+        if not re.fullmatch(r"[^:\x00-\x1f\x7f]{1,64}", name) or name != name.strip():
             raise ValueError("Invalid identity")
         salt, digest = encoded.split(":")
         if len(bytes.fromhex(salt)) != 16 or len(bytes.fromhex(digest)) != 32:
@@ -44,7 +45,8 @@ async def protect(request, call_next):
         name, password = base64.b64decode(token, validate=True).decode().split(":", 1)
         stored = users.get(name, "00" * 16 + ":" + "00" * 32)
         salt, expected = stored.split(":")
-        valid = hmac.compare_digest(password_hash(password, salt), expected) and name in users
+        actual = await run_in_threadpool(password_hash, password, salt)
+        valid = hmac.compare_digest(actual, expected) and name in users
     except (ValueError, UnicodeError):
         pass
     if not valid:

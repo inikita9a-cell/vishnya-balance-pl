@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from pydantic import BaseModel, Field
 from ..db import SessionLocal
 from ..models import Run
-from ..auth import current_user, get_run_readable, contained, identifier, run_directory, staging
+from ..auth import current_user, get_run_readable, contained, identifier, run_directory, staging, data_directory
 from .. import duck
 
 router = APIRouter(prefix="/api/runs", tags=["data"])
@@ -16,9 +16,15 @@ def _dir(rid: str) -> pathlib.Path:
 
 
 class PivotIn(BaseModel):
-    rows: list[str] = []
-    cols: list[str] = []
-    filters: dict = {}
+    rows: list[str] = Field(default_factory=list)
+    cols: list[str] = Field(default_factory=list)
+    filters: dict = Field(default_factory=dict)
+
+
+class PivotAppsIn(BaseModel):
+    filters: dict = Field(default_factory=dict)
+    limit: int = Field(50, ge=1, le=500)
+    offset: int = Field(0, ge=0)
 
 
 class ExplorerQueryIn(BaseModel):
@@ -42,7 +48,43 @@ def pivot(rid: str, body: PivotIn, user: str = Depends(current_user)):
     get_run_readable(rid, user)
     if not _dir(rid).exists():
         raise HTTPException(404)
-    return duck.pivot(_dir(rid), body.rows, body.cols, body.filters)
+    try:
+        return duck.pivot(_dir(rid), body.rows, body.cols, body.filters)
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/{rid}/pivot/dimensions")
+def pivot_dimensions(rid: str, user: str = Depends(current_user)):
+    get_run_readable(rid, user)
+    try:
+        return duck.pivot_dimensions(_dir(rid))
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.get("/{rid}/pivot/values")
+def pivot_values(rid: str, field: str, user: str = Depends(current_user)):
+    get_run_readable(rid, user)
+    try:
+        return duck.pivot_values(_dir(rid), field)
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/{rid}/pivot/apps")
+def pivot_apps(rid: str, body: PivotAppsIn, user: str = Depends(current_user)):
+    get_run_readable(rid, user)
+    try:
+        return duck.pivot_apps(_dir(rid), body.filters, body.limit, body.offset)
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.post("/{rid}/drilldown")
@@ -54,7 +96,12 @@ def drilldown(rid: str, body: PivotIn, user: str = Depends(current_user)):
 @router.post("/{rid}/sankey")
 def sankey(rid: str, body: PivotIn, user: str = Depends(current_user)):
     get_run_readable(rid, user)
-    return duck.get_sankey_data(_dir(rid), body.filters)
+    try:
+        return duck.get_sankey_data(_dir(rid), body.filters)
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("/{rid}/explorer/fields")
@@ -129,7 +176,7 @@ def app_raw(rid: str, app_id: str, user: str = Depends(current_user)):
             # Staging still restricts all datasets to the server's data directory.
             base = pathlib.Path(dataset['path']).resolve()
             if staging():
-                base = contained('data', base)
+                base = data_directory(base)
             for tag, key in [('BEFORE_MASTER', 'before_dir'), ('AFTER_BETA', 'after_dir')]:
                 for ext in ('json', 'xml'):
                     candidate = contained(base, base / dataset[key] / f'{app_id}.{ext}')

@@ -1,0 +1,33 @@
+{
+  "source": {
+    "uploaded_repository_sha": "e168d45a33afdb61629112aa082583667fa4c4dd",
+    "latest_pivot_packages_preserved": ["P0_01_05_06_ready.zip", "P0_05_06_pivot_usability_fix.zip"]
+  },
+  "environment": "Linux, Python 3.12, Node 24.22; Windows execution pending on user's PC",
+  "python_suite": {"passed": 313, "failed": 0},
+  "node_suite": {"passed": 26, "failed": 0},
+  "frontend_production_build": "PASS",
+  "checks": {
+    "shared_default_without_launcher_env": "PASS",
+    "two_real_concurrent_calculations": "PASS",
+    "different_pools_produced_4_and_1_applications": "PASS",
+    "third_user_reads_during_calculations": "PASS",
+    "other_user_pivot_cell_count_matches_application_page": "PASS",
+    "owners_snapshots_and_12_stages_remain_separate": "PASS",
+    "foreign_config_edit_and_rerun_denied": "PASS",
+    "anonymous_public_access_denied": "PASS",
+    "personal_public_login_and_shared_historic_report": "PASS",
+    "actual_built_static_assets_and_api_same_origin_asgi": "PASS",
+    "public_builtin_pipeline_and_check_rerun": "PASS",
+    "injected_python_rejected_before_queueing": "PASS",
+    "approved_external_dataset_root": "PASS",
+    "hosted_template_uses_configured_dataset_root": "PASS",
+    "historic_html_links_current_origin": "PASS",
+    "cloudflared_log_url_parser": "PASS",
+    "powershell_execution_on_windows": "NOT_TESTED",
+    "live_external_cloudflare_tunnel": "NOT_TESTED",
+    "customer_browser_end_to_end_on_public_url": "NOT_TESTED",
+    "full_original_windows_dataset_under_concurrent_load": "NOT_TESTED"
+  },
+  "note": "No public URL was created or sent. Only synthetic data was used in added runtime tests. This is not a load test for hundreds of users."
+}
