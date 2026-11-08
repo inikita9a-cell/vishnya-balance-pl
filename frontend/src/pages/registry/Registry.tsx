@@ -182,7 +182,7 @@ export function Registry({ runId, filters = {}, onRun, onRunChange, onClearFilte
         }} />
         {total > applications.length && <Muted>Показаны первые {applications.length} из {total} заявок. Обрабатывается полный список; для больших выборок нужна серверная пагинация.</Muted>}
         {detailError && <ErrorBox role="alert">{detailError}</ErrorBox>}
-        {selected && <DecisionXRay application={selected} segment={currentSegment} loadingChanges={loadingChanges}
+        {selected && <DecisionXRay runId={runId} application={selected} segment={currentSegment} loadingChanges={loadingChanges}
           onClose={() => setSelectedId(null)} onShowRaw={() => void toggleRaw()}
           showRaw={showRaw} raw={raw} rawLoading={rawLoading} />}
       </>}

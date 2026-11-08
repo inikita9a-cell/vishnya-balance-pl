@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from .db import init_db
 from .api import auth, configs, pools, procedures, runs_api, data_api, checks_api, check_apps_api
+from .api import explanation_api
 
 app = FastAPI(title="SPR change analysis")
 if os.getenv("APP_ENV", "development") == "development":
@@ -39,6 +40,7 @@ for r in (auth.router, configs.router, pools.router, procedures.router,
           check_apps_api.router):
     app.include_router(r)
 
+app.include_router(explanation_api.router)
 # Mounted after API routes; unknown API URLs must never return the SPA.
 if os.getenv("STATIC_DIR"):
     class SPAFiles(StaticFiles):
@@ -53,3 +55,4 @@ if os.getenv("STATIC_DIR"):
                     raise
                 return await super().get_response("index.html", scope)
     app.mount("/", SPAFiles(directory=os.environ["STATIC_DIR"], html=True))
+
