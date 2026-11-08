@@ -1,6 +1,6 @@
 /** UI view models, normalized from the actual Python backend responses in real.ts. */
 export type Page<T> = { items: T[]; total: number; offset: number; limit: number };
-export type User = { name: string; id?: string };
+export type User = { name: string; id?: string; auth_mode?: "basic" };
 export type RunStage = {
   step: string;
   status: string;

@@ -107,6 +107,7 @@ function App() {
       activeSection={section}
       onSectionChange={s => void selectSection(s)}
       userName={user.name}
+      basicAuth={user.auth_mode === "basic"}
       onLogout={() => {
         void post('/logout', {}).catch(() => { }).finally(() => {
           setUser(null);

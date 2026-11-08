@@ -41,6 +41,8 @@ def _is_jsonable(value) -> bool:
 
 def execute_user_code(code: str, entry: str, payload: dict, timeout: int = _TIMEOUT_DEFAULT):
     """Return (ok, result_or_error), never trying to read missing result output."""
+    if os.getenv("APP_ENV", "development") != "development":
+        return False, {"error": "User Python execution is disabled in staging"}
     json_args, obj_args = {}, {}
     for name, value in payload.items():
         (json_args if _is_jsonable(value) else obj_args)[name] = value

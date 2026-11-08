@@ -14,3 +14,10 @@ frontend/dist
 notebooks/.ipynb_checkpoints
 *.zip
 *.patch
+
+**/.env*
+**/node_modules
+**/*.parquet
+**/*.sqlite*
+
+.test-temp

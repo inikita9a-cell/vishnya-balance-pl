@@ -31,6 +31,8 @@ const responses = {
 const client = {
   api: async path => {calls.push(['GET',path]); if (!(path in responses)) throw Error(`Unhandled ${path}`); return responses[path];},
   post: async (path, body) => {calls.push(['POST',path,body]);
+    if (path.endsWith('/explorer/query')) return {rows:[],totalGroups:0,limit:body.limit,offset:body.offset};
+    if (path.endsWith('/explorer/apps')) return {items:[],total:0,limit:body.limit,offset:body.offset};
     if (path.endsWith('/drilldown')) return [
       {APP_ID:'17',DECISION_BEFORE:'APPROVE',DECISION_AFTER:'REJECT',DECISION_TRANSITION:'APPROVE→REJECT',REASON_TRANSITION:'∅→R1',N_DIFFS:3,CAUSE:'LOGIC'},
       {APP_ID:'18',DECISION_BEFORE:'APPROVE',DECISION_AFTER:'APPROVE',DECISION_TRANSITION:'APPROVE→APPROVE',REASON_TRANSITION:'∅→∅',N_DIFFS:0,CAUSE:'NONE'},
@@ -46,6 +48,70 @@ vm.runInNewContext(js,{exports: apiExports,require: id => {
   if (id === './client') return client;
   throw Error('Unexpected dependency '+id);
 },console});
+
+test('Explorer preserves exact drilldown filters, opaque array keys and pagination', async () => {
+  const filters = {PATH:'items.amount', DIFF_FLAG:1, ARRAY_KEY:'a%7Cb|x+y', VALUE_BEFORE:[null], VALUE_AFTER:['NULL']};
+  const body = {groupBy:['VALUE_BEFORE','VALUE_AFTER','CHANGE_TYPE'],filters,includeUnchanged:false,limit:20,offset:40};
+  await apiExports.queryExplorer('run /1',body);
+  assert.deepEqual(calls.at(-1),['POST','/runs/run%20%2F1/explorer/query',body]);
+  await apiExports.getExplorerApps('run /1',{filters,limit:20,offset:20});
+  assert.strictEqual(calls.at(-1)[2].filters,filters);
+  assert.equal(calls.at(-1)[1],'/runs/run%20%2F1/explorer/apps');
+  assert.equal(calls.at(-1)[2].offset,20);
+  responses['/runs/run%20%2F1/explorer/fields'] = {fields:[],dimensions:['PATH']};
+  assert.strictEqual(await apiExports.getExplorerFields('run /1'),responses['/runs/run%20%2F1/explorer/fields']);
+});
+
+const treeSource = fs.readFileSync(path.resolve(__dirname,'../src/pages/report/treeModel.ts'),'utf8');
+const treeExports = {};
+vm.runInNewContext(ts.transpileModule(treeSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:treeExports});
+
+const chartSource = fs.readFileSync(path.resolve(__dirname,'../src/pages/report/chartTreeModel.ts'),'utf8');
+const chartExports = {};
+vm.runInNewContext(ts.transpileModule(chartSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:chartExports});
+
+test('chart projection bounds wide/deep trees and preserves real attribute-parent identity', () => {
+  const fields = Array.from({length:1000},(_,i)=>({path:`root.branch${i}.value`,appsCount:7,changedAppsCount:3,depth:3,hasArrayInstances:true}));
+  fields.push({path:'root',appsCount:7,changedAppsCount:3,depth:1,hasArrayInstances:false});
+  const roots = treeExports.buildPathTree(fields);
+  const index = chartExports.indexPaths(roots);
+  const initial = chartExports.projectChart(roots,undefined,new Set(),0);
+  assert.equal(initial.root.children.length,1);
+  assert.equal(initial.root.children[0].children,undefined);
+  assert.equal(initial.root.children[0].attribute,true);
+  assert.equal(initial.root.children[0].branch,true);
+  const expanded = new Set(index.keys());
+  const page = chartExports.projectChart(roots,index.get('root'),expanded,1);
+  assert.equal(page.totalChildren,1000);
+  assert.equal(page.root.children.length,30);
+  assert.equal(page.root.children[0].path,roots[0].children[30].path);
+  assert.equal(page.omitted,true);
+  const countNodes = node=>1+(node.children||[]).reduce((n,child)=>n+countNodes(child),0);
+  assert.ok(countNodes(page.root)<=chartExports.NODE_LIMIT);
+  const leaf = chartExports.projectChart(roots,index.get('root.branch999.value'),new Set(),0);
+  assert.equal(leaf.root.path,'root.branch999.value');
+  assert.equal(leaf.root.attribute,true);
+  assert.equal(leaf.root.appsCount,undefined);
+  assert.equal(index.get('root.branch999.value').field.hasArrayInstances,true);
+});
+
+test('PATH tree preserves attribute-parent nodes without summing overlapping application counts', () => {
+  const field = path => ({path,depth:2,appsCount:10,changedAppsCount:7,hasArrayInstances:false});
+  const parent = field('root.attribute');
+  const tree = treeExports.buildPathTree([field('root.attribute.child'),parent,field('root.other')]);
+  assert.equal(tree.length,1);
+  assert.equal(tree[0].field,undefined);
+  assert.equal(tree[0].appsCount,undefined);
+  const node = tree[0].children.find(n=>n.path === parent.path);
+  assert.strictEqual(node.field,parent);
+  assert.equal(node.field.changedAppsCount,7);
+  assert.equal(node.children[0].path,'root.attribute.child');
+  const matches = treeExports.searchPathTree(tree,'CHILD');
+  assert.equal(matches[0].children.length,1);
+  assert.equal(matches[0].children[0].children[0].path,'root.attribute.child');
+  assert.equal(treeExports.searchPathTree(tree,'unknown').length,0);
+  assert.strictEqual(treeExports.searchPathTree(tree,'  '),tree);
+});
 
 test('run and config APIs are adapted from plain arrays, with lowercase statuses',async()=>{
   const runs=await apiExports.getRuns();

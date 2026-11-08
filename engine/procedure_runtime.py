@@ -210,6 +210,8 @@ def validate_facts(output, comparison, cfg):
 
 def execute(kind, cfg, **payload):
     """One subprocess per selected stage, including the whole normalization batch."""
+    if os.getenv('APP_ENV', 'development') != 'development':
+        raise ProcedureError('Custom Python is disabled on staging')
     spec = cfg['procedures'][kind]
     with tempfile.TemporaryDirectory(prefix='spr_procedure_') as dirname:
         request, response = Path(dirname) / 'request.pkl', Path(dirname) / 'response.pkl'

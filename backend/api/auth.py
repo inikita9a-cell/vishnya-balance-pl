@@ -13,7 +13,10 @@ class LoginIn(BaseModel):
 
 
 @router.post("/login")
-def login(body: LoginIn, response: Response):
+def login(body: LoginIn, response: Response, request: Request):
+    from ..auth import staging
+    if staging():
+        return {"name": request.state.verified_user}
     name = body.name.strip()
     if not 1 <= len(name) <= 64:
         raise HTTPException(400, "bad name")
@@ -30,7 +33,8 @@ def login(body: LoginIn, response: Response):
 
 @router.get("/me")
 def me(user: str = Depends(current_user)):
-    return {"name": user}
+    from ..auth import staging
+    return {"name": user, **({"auth_mode": "basic"} if staging() else {})}
 
 
 @router.post("/logout")
