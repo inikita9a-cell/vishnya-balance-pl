@@ -33,6 +33,7 @@ def run(mart, params=None):
             "TOTAL": total,
             "METRIC": round(len(apps) / total, 4) if total else 0.0,
             "APP_IDS": sorted(apps)[:p["app_ids_limit"]],
+            "FILTERS": {"app_ids": sorted(apps)},
             "RESULT": "FAIL",
             "CONFIDENCE": "LOW" if len(apps) < p["low_confidence_cnt"] else "HIGH",
         })

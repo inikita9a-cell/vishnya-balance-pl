@@ -86,12 +86,16 @@ def _normalize_row(row: dict, check_id: str, label: str, elapsed: float) -> dict
     values['DURATION_MS'] = round(elapsed * 1000, 3)
 
     # Optional: filters that reproduce this row's CNT from MartAPI.
-    # Any check may return FILTERS: {column: value | [values]}.
+    # Convention: FILTERS maps mart keyword arguments -> value(s).
+    # For app_ids specifically, use the key "app_ids" (MartAPI signature).
     filters = values.get('FILTERS')
-    if filters is not None and not isinstance(filters, dict):
-        raise ValueError('CHECK.FILTERS must be a dict or omitted')
-    values['FILTERS'] = filters  # None if omitted
-
+    if filters is not None:
+        if not isinstance(filters, dict):
+            raise ValueError('CHECK.FILTERS must be a dict or omitted')
+        # Backward compatibility: a check might have used APP_ID.
+        if 'APP_ID' in filters and 'app_ids' not in filters:
+            filters['app_ids'] = filters.pop('APP_ID')
+    values['FILTERS'] = filters
     return values
 
 

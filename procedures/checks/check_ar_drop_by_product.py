@@ -34,11 +34,9 @@ def run(mart, params=None):
             "TOTAL": d["total"],
             "METRIC": round(drop_rel, 4),
             "APP_IDS": sorted(d["lost"])[:p["app_ids_limit"]],
+            "FILTERS": {"app_ids": sorted(d["lost"])},
             "RESULT": "FAIL" if failed else "PASS",
             "CONFIDENCE": "LOW" if len(d["lost"]) < p["low_confidence_cnt"] else "HIGH",
-            "FILTERS": {
-                "APP_ID": sorted(d["lost"]),  # или минимальный набор фильтров MartAPI
-            }
         })
     return rows
 

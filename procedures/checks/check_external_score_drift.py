@@ -40,6 +40,7 @@ def run(mart, params=None):
         "TOTAL": total,
         "METRIC": round(len(false_alarm) / total, 4) if total else 0.0,
         "APP_IDS": sorted(false_alarm)[:p["app_ids_limit"]],
+        "FILTERS": {"app_ids": sorted(false_alarm)},
         "RESULT": "FAIL" if false_alarm else "PASS",
         "CONFIDENCE": "LOW" if 0 < len(false_alarm) < p["low_confidence_cnt"] else "HIGH",
     }, {
@@ -50,6 +51,7 @@ def run(mart, params=None):
         "TOTAL": total,
         "METRIC": round(len(mismatch) / total, 4) if total else 0.0,
         "APP_IDS": sorted(mismatch)[:p["app_ids_limit"]],
+        "FILTERS": {"app_ids": sorted(mismatch)},
         "RESULT": "FAIL" if mismatch else "PASS",
         "CONFIDENCE": "LOW" if 0 < len(mismatch) < p["low_confidence_cnt"] else "HIGH",
     }]

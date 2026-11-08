@@ -1,14 +1,4 @@
-"""Full-application list for one check result row.
-
-Frontend flow:
-  1. GET /api/runs/{rid}/checks -> rows with APP_IDS (may be truncated) + CNT.
-  2. If len(APP_IDS) < CNT, call this endpoint to fetch the full list.
-
-Contract:
-  * If the check returned FILTERS, we replay it via MartAPI on comparison.parquet.
-  * If FILTERS is absent but len(APP_IDS) == CNT, we return APP_IDS as-is.
-  * Otherwise 422 with a clear message (no silent truncation).
-"""
+"""Full-application list for one check result row."""
 from __future__ import annotations
 
 import json
@@ -23,10 +13,10 @@ router = APIRouter(prefix="/api/runs", tags=["checks"])
 
 
 class CheckAppsIn(BaseModel):
-    # Optional: filter by RESULT ("FAIL"/"PASS") and/or ARGUMENT (product, etc.).
-    result: str | None = None
-    argument: str | None = None
-    limit: int = Field(5000, ge=1, le=100000)
+    result: str | None = None       # e.g. "FAIL"
+    argument: str | None = None     # e.g. "PRODUCT_X"
+    limit: int = Field(1000, ge=1, le=100000)
+    offset: int = Field(0, ge=0)
 
 
 def _load_checks(run_dir: pathlib.Path) -> list[dict]:
@@ -44,6 +34,41 @@ def _row_matches(row: dict, result: str | None, argument: str | None) -> bool:
     return True
 
 
+def _expand_row(mart, row: dict) -> set[str]:
+    """Return full set of APP_IDs for a single check row.
+
+    Raises ValueError when the row is truncated but cannot be expanded, or
+    when the recovered count doesn't match CNT.
+    """
+    declared_cnt = int(row.get("CNT") or 0)
+    app_ids = list(row.get("APP_IDS") or [])
+
+    # Fast path: already complete.
+    if len(app_ids) == declared_cnt:
+        return set(app_ids)
+
+    filters = row.get("FILTERS")
+    if filters is None:
+        raise ValueError(
+            f"row truncated ({len(app_ids)} of {declared_cnt}) "
+            f"and has no FILTERS"
+        )
+    if not isinstance(filters, dict):
+        raise ValueError("FILTERS must be a dict")
+    try:
+        recovered = list(mart.app_ids(**filters))
+    except TypeError as e:
+        raise ValueError(f"invalid FILTERS: {e}")
+
+    unique = set(recovered)
+    if len(unique) != declared_cnt:
+        raise ValueError(
+            f"FILTERS recovered {len(unique)} unique APP_IDs, "
+            f"but CNT={declared_cnt} (check must return matching filters)"
+        )
+    return unique
+
+
 @router.post("/{rid}/checks/{check_id}/apps")
 def check_apps(rid: str, check_id: str, body: CheckAppsIn,
                user: str = Depends(current_user)):
@@ -51,58 +76,32 @@ def check_apps(rid: str, check_id: str, body: CheckAppsIn,
     run_dir = pathlib.Path("runs") / rid
     rows = _load_checks(run_dir)
 
-    # Collect the matching result rows for this check_id.
     matching = [r for r in rows
-                if r.get("CHECK_ID") == check_id and _row_matches(r, body.result, body.argument)]
+                if r.get("CHECK_ID") == check_id
+                and _row_matches(r, body.result, body.argument)]
     if not matching:
         raise HTTPException(404, "no rows match this check and filter")
 
-    # Full CNT across matching rows (each row may correspond to a product/segment).
-    total_cnt = sum(int(r.get("CNT") or 0) for r in matching)
-
-    # Fast path: APP_IDS already complete for all matching rows.
-    if all(len(r.get("APP_IDS") or []) == int(r.get("CNT") or 0) for r in matching):
-        app_ids = sorted({aid for r in matching for aid in (r.get("APP_IDS") or [])})
-        return {
-            "check_id": check_id,
-            "total": len(app_ids),
-            "declared_cnt": total_cnt,
-            "truncated": False,
-            "items": app_ids[: body.limit],
-            "source": "APP_IDS",
-        }
-
-    # Otherwise replay via MartAPI using FILTERS (per row) and union results.
-    from engine.mart_api import MartAPI  # same class checks_service uses
-
+    from engine.mart_api import MartAPI
     mart = MartAPI.from_run(run_dir)
+
     collected: set[str] = set()
-    used_filters = False
-    for r in matching:
-        filters = r.get("FILTERS")
-        if filters is None:
-            continue
-        used_filters = True
+    for row in matching:
         try:
-            ids = mart.app_ids(**filters)
-        except TypeError as e:
-            raise HTTPException(422, f"invalid FILTERS in checks.json: {e}")
-        collected.update(ids)
+            collected |= _expand_row(mart, row)
+        except ValueError as e:
+            raise HTTPException(422, f"{check_id}/{row.get('ARGUMENT')}: {e}")
 
-    if not used_filters:
-        raise HTTPException(
-            422,
-            f"check '{check_id}' truncated APP_IDS "
-            f"({len(matching[0].get('APP_IDS') or [])} of {total_cnt}) "
-            f"but did not expose FILTERS; cannot expand",
-        )
-
-    items = sorted(collected)
+    total = len(collected)
+    ordered = sorted(collected)
+    page = ordered[body.offset: body.offset + body.limit]
     return {
         "check_id": check_id,
-        "total": len(items),
-        "declared_cnt": total_cnt,
-        "truncated": False,
-        "items": items[: body.limit],
-        "source": "FILTERS",
+        "total": total,
+        "declared_cnt": sum(int(r.get("CNT") or 0) for r in matching),
+        "truncated": len(page) < total,
+        "items": page,
+        "limit": body.limit,
+        "offset": body.offset,
+        "source": "MIXED",  # rows may be APP_IDS or FILTERS
     }
